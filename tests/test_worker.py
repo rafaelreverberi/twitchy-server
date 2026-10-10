@@ -25,11 +25,14 @@ class Upstream:
         self.playlist = playlist
         self.bodies = bodies or {0: b'NORMAL-BEFORE', 1: b'AD-RED', 2: b'NORMAL-AFTER'}
         self.hits = []
+        self.status = 200
         upstream = self
         class Handler(BaseHTTPRequestHandler):
             def log_message(self, *args): pass
             def do_GET(self):
                 upstream.hits.append(self.path)
+                if upstream.status != 200:
+                    self.send_response(upstream.status); self.end_headers(); return
                 if self.path == '/index.m3u8':
                     data = upstream.playlist.encode()
                 else:
@@ -96,6 +99,16 @@ class WorkerTests(unittest.TestCase):
             self.assertNotIn('/1.ts', upstream.hits)
         finally: upstream.close()
 
+    def test_upstream_403_429_and_broken_feed_fail_without_bytes(self):
+        for status in [403,429,503]:
+            upstream = Upstream(HEADER+segment(0)+'#EXT-X-ENDLIST\n');upstream.status=status
+            try:
+                try: data = read(upstream)
+                except Exception: data = b''
+                self.assertEqual(data, b'')
+                self.assertLessEqual(len(upstream.hits), 5)
+            finally: upstream.close()
+
     def test_unsupported_partial_init_delta_fail_closed(self):
         for tag in ['#EXT-X-PART:DURATION=1,URI="1.ts"', '#EXT-X-MAP:URI="init.mp4"', '#EXT-X-PRELOAD-HINT:TYPE=PART,URI="1.ts"', '#EXT-X-SKIP:SKIPPED-SEGMENTS=1']:
             with self.assertRaises(Exception): ConservativeParser().parse(HEADER + tag + '\n' + segment(0))
@@ -104,6 +117,9 @@ class WorkerTests(unittest.TestCase):
         for url in ['http://gql.twitch.tv/x','https://127.0.0.1/x','https://gql.twitch.tv.evil.test/x','https://user:pass@gql.twitch.tv/x','https://gql.twitch.tv:444/x','file:///etc/passwd','https://169.254.169.254/x']:
             self.assertFalse(allowed_url(url))
         self.assertTrue(allowed_url('https://gql.twitch.tv/gql'))
+        import urllib3.util.connection
+        original_connect = urllib3.util.connection.create_connection
+        self.addCleanup(setattr, urllib3.util.connection, "create_connection", original_connect)
         s = session(test=True); secure_network(s)
         import requests
         with self.assertRaises(Exception): s.http.send(requests.Request('GET','https://127.0.0.1/x').prepare())

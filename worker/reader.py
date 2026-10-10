@@ -30,11 +30,18 @@ def allowed_url(url):
 def secure_network(session):
     """Validate each redirect at send, and pin a checked IP at connection time."""
     original_send = session.http.send
+    session.upstream_status = 0
+    session.upstream_retry_after = 30
     session.http.trust_env = False
     def send(request, **kwargs):
         if not allowed_url(request.url):
             raise StreamError("upstream destination denied")
-        return original_send(request, **kwargs)
+        response = original_send(request, **kwargs)
+        if response.status_code in (403, 429) or response.status_code >= 500:
+            session.upstream_status = response.status_code
+            try: session.upstream_retry_after = max(1, min(300, int(response.headers.get('Retry-After', '30'))))
+            except ValueError: session.upstream_retry_after = 30
+        return response
     session.http.send = send
     def connect(address, timeout=socket._GLOBAL_DEFAULT_TIMEOUT, source_address=None, socket_options=None):
         host, port = address
@@ -144,7 +151,10 @@ def run(args):
     found = streams(s, args.channel)
     qualities = sorted(found, key=lambda q: tuple(int(n) for n in re.findall(r"\d+", q)))
     if not qualities:
-        print(json.dumps({"error": "content_unavailable"})) if args.mode == "probe" else None
+        status = getattr(s, 'upstream_status', 0)
+        error = 'rate_limited' if status == 429 else 'source_unavailable' if status else 'content_unavailable'
+        if args.mode == 'probe':
+            print(json.dumps({'error': error, 'retry_after': getattr(s, 'upstream_retry_after', 30)}))
         return 4
     if args.mode == "probe":
         print(json.dumps({"qualities": ["auto"] + qualities}))

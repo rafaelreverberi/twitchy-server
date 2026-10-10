@@ -3,6 +3,7 @@ set -eu
 cd "$(dirname "$0")/.."
 image_name=${1:-twitchy-server:smoke}
 port=${2:-18080}
+mode=${3:-fixture}
 work=$(mktemp -d)
 name="twitchy-smoke-$$"
 trap 'docker rm -f "$name" >/dev/null 2>&1 || true; rm -rf "$work"' EXIT
@@ -13,7 +14,11 @@ p=pathlib.Path(sys.argv[1]);(p/'tokens.json').write_text(json.dumps({'test':secr
 os.chmod(p/'tokens.json',0o644);os.chmod(p/'signing.key',0o644)
 PY
 docker run -d --name "$name" --read-only --tmpfs /tmp:size=32m --tmpfs /state:uid=10001,gid=10001,size=32m --cap-drop ALL --security-opt no-new-privileges --memory 384m --pids-limit 96 -p "127.0.0.1:$port:8080" -v "$work:/test-secrets:ro" -e TOKEN_FILE=/test-secrets/tokens.json -e SIGNING_KEY_FILE=/test-secrets/signing.key -e ALLOW_HTTP=true -e "PUBLIC_BASE_URL=http://127.0.0.1:$port" "$image_name" >/dev/null
-TOKEN_FILE="$work/tokens.json" python3 scripts/smoke.py --base-url "http://127.0.0.1:$port" --channel fixture --decode
+if [ "$mode" = health ]; then
+    TOKEN_FILE="$work/tokens.json" python3 scripts/smoke.py --base-url "http://127.0.0.1:$port" --health-only
+else
+    TOKEN_FILE="$work/tokens.json" python3 scripts/smoke.py --base-url "http://127.0.0.1:$port" --channel fixture --decode
+fi
 # Every worker and media directory must be gone after DELETE.
 count=$(docker exec "$name" python -c 'import os; print(len(os.listdir("/state/media")))')
 [ "$count" = 0 ]

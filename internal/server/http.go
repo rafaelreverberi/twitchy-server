@@ -7,6 +7,7 @@ import (
 	"crypto/subtle"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -231,7 +232,11 @@ func (s *Server) create(w http.ResponseWriter, r *http.Request, owner string) {
 	qs, e := s.provider.Qualities(probe, strings.ToLower(req.Channel))
 	pcancel()
 	if e != nil {
-		if e == ErrUnavailable {
+		var limit UpstreamLimit
+		if errors.As(e, &limit) {
+			w.Header().Set("Retry-After", strconv.Itoa(limit.After))
+			problem(w, 429, "rate_limited", "Upstream rate limit reached", true)
+		} else if e == ErrUnavailable {
 			problem(w, 404, "content_unavailable", "Stream is offline or unavailable", false)
 		} else {
 			problem(w, 503, "source_unavailable", "Upstream acquisition failed; see operator documentation", true)
@@ -248,7 +253,11 @@ func (s *Server) create(w http.ResponseWriter, r *http.Request, owner string) {
 		problem(w, 400, "invalid_request", "Requested quality unavailable", false)
 		return
 	}
-	session, e := s.manager.start(ctx, owner, strings.ToLower(req.Channel), *req.Quality)
+	chosenQuality := *req.Quality
+	if chosenQuality == "auto" {
+		chosenQuality = qs[len(qs)-1]
+	}
+	session, e := s.manager.start(ctx, owner, strings.ToLower(req.Channel), chosenQuality)
 	if e != nil {
 		problem(w, 503, "source_unavailable", "Playback could not start within bounded startup time", true)
 		return

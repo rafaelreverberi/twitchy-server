@@ -146,6 +146,20 @@ func TestDegradedAndStartupFailure(t *testing.T) {
 		s.Close()
 	}
 }
+func TestUpstreamLimitResponse(t *testing.T) {
+	c := testConfig(t)
+	s, e := New(c, stubProvider{ready: true, err: UpstreamLimit{After: 17}})
+	if e != nil {
+		t.Fatal(e)
+	}
+	defer s.Close()
+	w := request(t, s, "POST", "/v1/playback/sessions", "a", `{"content_type":"live","channel_login":"example","requested_quality":"auto"}`)
+	if w.Code != 429 || w.Header().Get("Retry-After") != "17" {
+		t.Fatal("upstream limit not propagated")
+	}
+	record(t, "/v1/playback/sessions", "post", w)
+}
+
 func TestSignedHLSOwnershipRevocationAndTTL(t *testing.T) {
 	if _, e := exec.LookPath("ffmpeg"); e != nil {
 		t.Fatal("ffmpeg required for integration test")
@@ -328,5 +342,40 @@ func TestSignatureExpiryCapacityAndFailureCleanup(t *testing.T) {
 	}
 	for len(s.gate) > 0 {
 		<-s.gate
+	}
+}
+
+func TestResolverReacquisitionBackoffAndCancellation(t *testing.T) {
+	python, e := exec.LookPath("python3")
+	if e != nil {
+		t.Fatal(e)
+	}
+	script := filepath.Join(t.TempDir(), "worker.py")
+	if e := os.WriteFile(script, []byte("import sys\nif sys.argv[1]=='probe': print('{\"qualities\":[\"auto\",\"360p\"]}')\nelif sys.argv[1]=='check': pass\nelse: sys.stdout.buffer.write(b'NORMAL'); sys.stdout.buffer.flush()\n"), 0600); e != nil {
+		t.Fatal(e)
+	}
+	p := StreamlinkProvider{Python: python, Worker: script}
+	ctx, cancel := context.WithTimeout(context.Background(), 2500*time.Millisecond)
+	defer cancel()
+	qs, e := p.Qualities(ctx, "fixture")
+	if e != nil || len(qs) != 2 {
+		t.Fatal("quality probe")
+	}
+	var output bytes.Buffer
+	start := time.Now()
+	e = p.Stream(ctx, "fixture", "360p", true, &output)
+	if e == nil || output.String() != "NORMALNORMAL" || time.Since(start) < 2*time.Second {
+		t.Fatal("unbounded/rapid reacquisition or cancellation failure")
+	}
+	// A nonterminating worker must be stopped without waiting for its own timeout.
+	if e := os.WriteFile(script, []byte("import time\ntime.sleep(30)\n"), 0600); e != nil {
+		t.Fatal(e)
+	}
+	bounded, stop := context.WithTimeout(context.Background(), 150*time.Millisecond)
+	defer stop()
+	start = time.Now()
+	_ = p.Stream(bounded, "fixture", "auto", true, io.Discard)
+	if time.Since(start) > time.Second {
+		t.Fatal("worker cancellation failed")
 	}
 }

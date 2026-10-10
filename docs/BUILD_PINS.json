@@ -1,0 +1,15 @@
+{
+  "go": "1.26.5",
+  "golang_base_index": "sha256:53eeac89074db483fdf0ab3be1df32bf6e47562263d2d0d6baa7f26acb4957dd",
+  "python": "3.12.12",
+  "python_base_index": "sha256:593bd06efe90efa80dc4eee3948be7c0fde4134606dd40d8dd8dbcade98e669c",
+  "streamlink": "8.6.2",
+  "ffmpeg_debian": "7:5.1.9-0+deb12u1",
+  "debian_snapshot": "20261009T000000Z",
+  "caddy_base_index": "sha256:834468128c7696cec0ceea6172f7d692daf645ae51983ca76e39da54a97c570d",
+  "ffmpeg_sources_sha256": {
+    "ffmpeg_5.1.9-0+deb12u1.dsc": "055f82fca9a92f1d47216be2c2488d09373c7ca154806fbc36b0127c191d5104",
+    "ffmpeg_5.1.9-0+deb12u1.debian.tar.xz": "71b20472ecd2764bc98e3229d34c0f7c8dcfe4a6cbacc23fd5604c23bac04632",
+    "ffmpeg_5.1.9.orig.tar.xz": "d9b593bb2ba93d4b50f74177e0cdcd41747e708596367deed0c30348a71dd176"
+  }
+}

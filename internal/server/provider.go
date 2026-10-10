@@ -17,6 +17,10 @@ import (
 var ErrUnavailable = errors.New("content unavailable")
 var ErrProvider = errors.New("provider unavailable")
 
+type UpstreamLimit struct{ After int }
+
+func (e UpstreamLimit) Error() string { return "upstream rate limited" }
+
 type Provider interface {
 	Ready(context.Context) bool
 	Qualities(context.Context, string) ([]string, error)
@@ -35,11 +39,19 @@ func (p StreamlinkProvider) Qualities(ctx context.Context, channel string) ([]st
 	cmd.Stdout = &out
 	_ = cmd.Run()
 	var data struct {
-		Qualities []string `json:"qualities"`
-		Error     string   `json:"error"`
+		Qualities  []string `json:"qualities"`
+		Error      string   `json:"error"`
+		RetryAfter int      `json:"retry_after"`
 	}
 	if json.Unmarshal(out.data, &data) != nil {
 		return nil, ErrProvider
+	}
+	if data.Error == "rate_limited" {
+		after := data.RetryAfter
+		if after < 1 || after > 300 {
+			after = 30
+		}
+		return nil, UpstreamLimit{After: after}
 	}
 	if data.Error == "content_unavailable" {
 		return nil, ErrUnavailable

@@ -83,3 +83,13 @@ jobs:
           DIGEST: ${{ steps.publish.outputs.digest }}
           VERSION: ${{ steps.version.outputs.value }}
         run: echo "Image ghcr.io/rafaelreverberi/twitchy-server:$VERSION@$DIGEST" >> "$GITHUB_STEP_SUMMARY"
+      - name: Verify published registry manifest and private package metadata
+        env:
+          DIGEST: ${{ steps.publish.outputs.digest }}
+          VERSION: ${{ steps.version.outputs.value }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          docker buildx imagetools inspect "ghcr.io/rafaelreverberi/twitchy-server:$VERSION@$DIGEST"
+          docker pull "ghcr.io/rafaelreverberi/twitchy-server:$VERSION@$DIGEST"
+          scripts/container_smoke.sh "ghcr.io/rafaelreverberi/twitchy-server:$VERSION@$DIGEST" 18080 health
+          gh api users/rafaelreverberi/packages/container/twitchy-server --jq '{name,visibility}'
