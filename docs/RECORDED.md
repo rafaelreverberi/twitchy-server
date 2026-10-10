@@ -1,6 +1,6 @@
 # Recorded playback and client downloads
 
-Version 0.2.0 adds public VOD and clip playback. Session creation accepts `content_type: vod` with a numeric Twitch `content_id`, or `content_type: clip` with the case-sensitive clip slug. `requested_quality: auto` means Best: the server resolves the highest available supported rendition and returns `selected_quality`. Missing, private, restricted or deleted content remains unavailable; no recovery or DRM decryption is implemented.
+Version 0.2.1 adds public VOD and clip playback. Session creation accepts `content_type: vod` with a numeric Twitch `content_id`, or `content_type: clip` with the case-sensitive clip slug. `requested_quality: auto` means Best: the server resolves the highest available supported rendition and returns `selected_quality`. Missing, private, restricted or deleted content remains unavailable; no recovery or DRM decryption is implemented.
 
 VOD playback fetches a finite playlist and keeps a private resource map in memory. The signed client playlist includes the full timeline and ENDLIST for seeking. Complete segments and initialization data pass through bounded buffers on demand; the server does not prepare or retain an entire VOD. A still-growing broadcast is a snapshot of the archive at opening; reopen for newly archived content. Encrypted and byte-range playlists fail closed. Clip playback temporarily remuxes a bounded clip to local HLS segments, removed with the session. Neither path transcodes; clients decode the media.
 
@@ -19,3 +19,5 @@ With ADBLOCK on, the same conservative marker parser removes recognized ad segme
 ## Small Linux hosts
 
 Both linux/amd64 (including 64-bit Intel NUC Linux) and linux/arm64 are targeted. No GPU is required. Start with two total sessions and observe CPU, memory and bandwidth; no physical NUC capacity has been measured. Clip input is capped at 64 MiB, remux output at 80 MiB, and concurrent recorded acquisitions at two. VOD playlists are capped at 20,000 segments; on-demand media has at most four simultaneous buffers of 32 MiB (initialization 1 MiB). The 768 MiB container ceiling remains enforced. See [host guidance](SMALL_LINUX_HOST.md).
+
+Archive file responses refresh their write deadline with progress instead of inheriting the short playback startup deadline. A blocked socket write has a 30-second budget; the overall transfer is bounded to 12 hours, matching the updated client resource timeout.

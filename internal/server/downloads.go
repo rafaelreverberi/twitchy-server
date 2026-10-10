@@ -180,7 +180,10 @@ func (s *Server) downloadRoute(w http.ResponseWriter, r *http.Request, owner, pa
 		return
 	}
 	defer s.manager.unreserve(owner)
-	ctx, cancel := context.WithCancel(r.Context())
+	ctx, cancel := context.WithTimeout(r.Context(), 12*time.Hour)
+	controller := http.NewResponseController(w)
+	_ = controller.SetWriteDeadline(time.Now().Add(s.cfg.Startup + 15*time.Second))
+	writer := transferWriter{w: w, controller: controller}
 	j.cancel = cancel
 	j.Status = "transferring"
 	j.Error = nil
@@ -230,7 +233,7 @@ func (s *Server) downloadRoute(w http.ResponseWriter, r *http.Request, owner, pa
 		w.Header().Set("Content-Type", "video/mp4")
 		w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=\"%s\"", j.Filename))
 		w.Header().Set("Cache-Control", "no-store")
-		_, readErr = w.Write(first[:n])
+		_, readErr = writer.Write(first[:n])
 		if f, ok := w.(http.Flusher); ok {
 			f.Flush()
 		}
@@ -238,7 +241,7 @@ func (s *Server) downloadRoute(w http.ResponseWriter, r *http.Request, owner, pa
 	var copied int64
 	var copyErr error
 	if n > 0 {
-		copied, copyErr = io.Copy(w, output)
+		copied, copyErr = io.Copy(writer, output)
 	}
 	if copyErr != nil || (readErr != nil && readErr != io.EOF) {
 		cancel()
@@ -279,4 +282,16 @@ func (s *Server) downloadFailed(id string) {
 		}
 		j.Error = map[string]any{"code": "source_unavailable", "message": "Transfer failed", "retryable": true}
 	}
+}
+
+// Refresh the socket deadline on progress, rather than limiting the duration of
+// an entire archive transfer to the short playback-startup timeout.
+type transferWriter struct {
+	w          http.ResponseWriter
+	controller *http.ResponseController
+}
+
+func (w transferWriter) Write(p []byte) (int, error) {
+	_ = w.controller.SetWriteDeadline(time.Now().Add(30 * time.Second))
+	return w.w.Write(p)
 }

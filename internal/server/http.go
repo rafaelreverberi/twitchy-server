@@ -28,7 +28,7 @@ var initPattern = regexp.MustCompile(`^init[0-9]{9,15}\.mp4$`)
 var vodIDPattern = regexp.MustCompile(`^[0-9]{1,20}$`)
 var segmentPattern = regexp.MustCompile(`^seg[0-9]{9,15}\.ts$`)
 
-const Version = "0.2.0"
+const Version = "0.2.1"
 
 type Server struct {
 	cfg       Config

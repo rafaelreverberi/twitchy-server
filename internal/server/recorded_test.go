@@ -6,6 +6,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -168,5 +169,46 @@ func TestRecordedShutdownCancelsActiveTransfer(t *testing.T) {
 	case <-finished:
 	case <-time.After(time.Second):
 		t.Fatal("handler did not finish")
+	}
+}
+
+type delayedRecorded struct{ recordedFixture }
+
+func (p delayedRecorded) Stream(ctx context.Context, _ string, _ string, _ bool, w io.Writer) error {
+	select {
+	case <-time.After(250 * time.Millisecond):
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+	_, err := w.Write(p.media)
+	return err
+}
+func TestArchiveTransferOverridesShortHTTPWriteDeadline(t *testing.T) {
+	media, err := exec.Command("ffmpeg", "-v", "error", "-f", "lavfi", "-i", "color=c=blue:s=160x90:r=25:d=2", "-c:v", "libx264", "-threads", "1", "-f", "mpegts", "pipe:1").Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	s, err := New(testConfig(t), delayedRecorded{recordedFixture{stubProvider: stubProvider{ready: true}, media: media}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	create := request(t, s, "POST", "/v1/downloads", "a", `{"content_type":"vod","content_id":"123"}`)
+	var job downloadJob
+	json.Unmarshal(create.Body.Bytes(), &job)
+	host := httptest.NewUnstartedServer(s)
+	host.Config.WriteTimeout = 50 * time.Millisecond
+	host.Start()
+	defer host.Close()
+	req, _ := http.NewRequest("GET", host.URL+"/v1/downloads/"+job.ID+"/file", nil)
+	req.Header.Set("Authorization", "Bearer "+strings.Repeat("a", 43))
+	response, err := host.Client().Do(req)
+	if err != nil {
+		t.Fatal("archive failed after short write deadline", err)
+	}
+	defer response.Body.Close()
+	body, err := io.ReadAll(response.Body)
+	if err != nil || response.StatusCode != 200 || len(body) < 1000 {
+		t.Fatal("incomplete archive", response.StatusCode, len(body), err)
 	}
 }
