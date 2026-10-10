@@ -225,6 +225,8 @@ def streams(s, login, cache_dir=None, fresh=False):
     found = plugin.streams()
     result = {q: stream for q, stream in found.items()
             if re.fullmatch(r"\d+p(?:\d+)?", q) and ((isinstance(stream, HLSStream) and type(stream).__name__ == "TwitchHLSStream") or (login.startswith("clip:") and isinstance(stream, HTTPStream)))}
+    if login.startswith("clip:"):
+        result = {q[:-1] if q.endswith("p0") else q: stream for q, stream in result.items()}
     if path and result and not login.startswith("clip:"):
         cache.mkdir(mode=0o700,parents=True,exist_ok=True)
         # Bounded public-channel acquisition cache, not a media/session cache.
@@ -284,6 +286,24 @@ def vod_plan(s, chosen, ads):
     return {'playlist':'\n'.join(lines)+'\n','resources':resources,'duration':duration}
 
 
+def remux_clip(body):
+    # Older clips put moov after mdat. FFmpeg needs seekable input for those.
+    # Linux anonymous RAM file: no path, no retained server download file.
+    if not hasattr(os, 'memfd_create'): raise StreamError('anonymous seekable media unavailable')
+    fd = os.memfd_create('twitchy-clip', os.MFD_CLOEXEC)
+    try:
+        view = memoryview(body)
+        while view:
+            written = os.write(fd, view)
+            view = view[written:]
+        os.lseek(fd, 0, os.SEEK_SET)
+        result = subprocess.run([os.environ.get('FFMPEG','ffmpeg'),'-v','error','-protocol_whitelist','file,pipe','-i','/proc/self/fd/'+str(fd),'-map','0:v:0','-map','0:a:0?','-c','copy','-f','mpegts','pipe:1'],pass_fds=(fd,),stdout=subprocess.PIPE,stderr=subprocess.DEVNULL,timeout=30)
+        if result.returncode or not result.stdout or len(result.stdout)>80*1024*1024: raise StreamError('clip remux failed')
+        return result.stdout
+    finally:
+        os.close(fd)
+
+
 def run(args):
     s = session()
     found = streams(s, args.channel, os.environ.get("RESOLVER_CACHE_DIR"), args.fresh)
@@ -314,9 +334,7 @@ def run(args):
                 if not chunk: break
                 if len(body)+len(chunk)>64*1024*1024: return 7
                 body.extend(chunk)
-        result=subprocess.run([os.environ.get('FFMPEG','ffmpeg'),'-v','error','-protocol_whitelist','pipe','-i','pipe:0','-map','0:v:0','-map','0:a:0?','-c','copy','-f','mpegts','pipe:1'],input=body,stdout=subprocess.PIPE,stderr=subprocess.DEVNULL,timeout=30)
-        if result.returncode or len(result.stdout)>80*1024*1024: return 7
-        sys.stdout.buffer.write(result.stdout)
+        sys.stdout.buffer.write(remux_clip(body))
         return 0
     cls = FilteredStream if args.adblock == "on" else UnfilteredStream
     stream = cls(s, chosen.url)  # Never stream.to_url() as the playback output.

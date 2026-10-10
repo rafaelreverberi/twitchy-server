@@ -75,6 +75,18 @@ class WorkerTests(unittest.TestCase):
                 self.assertEqual(run(args), 0)
             self.assertEqual(output.getvalue(), b'NORMAL-HLS')
 
+    @unittest.skipUnless(hasattr(__import__('os'), 'memfd_create'), 'Linux anonymous media file')
+    def test_clip_tail_moov_remux_has_full_video_and_audio(self):
+        from worker.reader import remux_clip
+        with tempfile.TemporaryDirectory() as tmp:
+            path = pathlib.Path(tmp)/'clip.mp4'
+            subprocess.run(['ffmpeg','-v','error','-f','lavfi','-i','color=c=blue:s=160x90:r=25:d=2','-f','lavfi','-i','sine=frequency=440:sample_rate=48000:duration=2','-c:v','libx264','-threads','1','-c:a','aac',str(path)],check=True)
+            body = path.read_bytes()
+            self.assertGreater(body.find(b'moov'), body.find(b'mdat'))
+            data = remux_clip(body)
+            pixels = subprocess.check_output(['ffmpeg','-v','error','-f','mpegts','-i','pipe:0','-vf','scale=1:1','-pix_fmt','rgb24','-f','rawvideo','pipe:1'],input=data)
+            self.assertGreaterEqual(len(pixels), 45*3)
+
     def test_clip_short_reads_are_collected_until_eof(self):
         import io
         from types import SimpleNamespace
@@ -86,9 +98,9 @@ class WorkerTests(unittest.TestCase):
             def read(self, size=-1): return super().read(min(size, 3))
         output = io.BytesIO()
         args = SimpleNamespace(channel='clip:Example', mode='run', quality='auto', fresh=False, adblock='on')
-        with patch('worker.reader.session', return_value=s), patch('worker.reader.streams', return_value={'360p30':chosen}), patch.object(chosen, 'open', return_value=ShortReader(b'COMPLETE-MP4')), patch('worker.reader.subprocess.run', return_value=SimpleNamespace(returncode=0,stdout=b'TS-BYTES')) as remux, patch('worker.reader.sys.stdout', SimpleNamespace(buffer=output)):
+        with patch('worker.reader.session', return_value=s), patch('worker.reader.streams', return_value={'360p30':chosen}), patch.object(chosen, 'open', return_value=ShortReader(b'COMPLETE-MP4')), patch('worker.reader.remux_clip', return_value=b'TS-BYTES') as remux, patch('worker.reader.sys.stdout', SimpleNamespace(buffer=output)):
             self.assertEqual(run(args), 0)
-            self.assertEqual(remux.call_args.kwargs['input'], b'COMPLETE-MP4')
+            self.assertEqual(remux.call_args.args[0], b'COMPLETE-MP4')
         self.assertEqual(output.getvalue(), b'TS-BYTES')
 
     def test_recorded_plan_filters_ads_and_retains_full_seek_timeline(self):
