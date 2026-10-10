@@ -1,8 +1,8 @@
 # twitchy-server
 
-A self-hosted live HLS source for [Twitchy](https://github.com/rafaelreverberi/Twitchy), with independent source authentication and server-side ad filtering. Go owns the control API, sessions and signed media gateway. Streamlink **8.6.2 reads the stream bytes** and filters marked ads; FFmpeg remuxes H.264/AAC into server-owned MPEG-TS HLS. During ads, output pauses until normal content returns. No Apple browser extension is required.
+A self-hosted live, VOD and clip HLS source for [Twitchy](https://github.com/rafaelreverberi/Twitchy), with independent source authentication and server-side ad filtering. Go owns the control API, sessions and signed media gateway. Streamlink **8.6.2 reads the stream bytes** and filters marked ads; FFmpeg remuxes H.264/AAC into server-owned MPEG-TS HLS. During ads, output pauses until normal content returns. No Apple browser extension is required.
 
-**Default:** filtering on, filter/pause mode. Backup playlist switching is disabled. Public live streams are supported; VODs, clips and downloads are disabled. `auto` selects the highest available H.264 video quality at session creation; an explicit quality starts a new session. LL-HLS is disabled even if requested. Unmarked advertising cannot be reliably identified. No promise of uninterrupted or universally ad-free playback.
+**Default:** filtering on, filter/pause mode. Backup playlist switching is disabled. Public live streams, public VODs and clips are supported. Manual VOD/clip downloads stream MP4 to the client without retaining a server download archive. See [recorded playback and downloads](docs/RECORDED.md). `auto` selects the highest available H.264 video quality at session creation; an explicit quality starts a new session. LL-HLS is disabled even if requested. Unmarked advertising cannot be reliably identified. No promise of uninterrupted or universally ad-free playback.
 
 GitHub stores the code; GHCR stores the image. Neither hosts the running video server. Run it on your own Docker-capable Mac, Linux computer, NAS or authorized VPS. No production host or domain has been deployed.
 

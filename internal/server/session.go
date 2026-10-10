@@ -41,25 +41,27 @@ type BackupSelector interface {
 
 type Session struct {
 	ID, Owner, Dir string
+	Plan           *RecordedPlan
 	Expires, Last  time.Time
 	cancel         context.CancelFunc
 	done           chan struct{}
 }
 type SessionManager struct {
-	mu       sync.Mutex
-	sessions map[string]*Session
-	pending  map[string]int
-	cfg      Config
-	provider Provider
-	policy   AdPolicy
-	ctx      context.Context
-	cancel   context.CancelFunc
-	wg       sync.WaitGroup
+	mu            sync.Mutex
+	recordingGate chan struct{}
+	sessions      map[string]*Session
+	pending       map[string]int
+	cfg           Config
+	provider      Provider
+	policy        AdPolicy
+	ctx           context.Context
+	cancel        context.CancelFunc
+	wg            sync.WaitGroup
 }
 
 func NewManager(c Config, p Provider, policy AdPolicy) *SessionManager {
 	ctx, cancel := context.WithCancel(context.Background())
-	m := &SessionManager{sessions: map[string]*Session{}, pending: map[string]int{}, cfg: c, provider: p, policy: policy, ctx: ctx, cancel: cancel}
+	m := &SessionManager{recordingGate: make(chan struct{}, 2), sessions: map[string]*Session{}, pending: map[string]int{}, cfg: c, provider: p, policy: policy, ctx: ctx, cancel: cancel}
 	m.wg.Add(1)
 	go func() {
 		defer m.wg.Done()
@@ -89,7 +91,7 @@ func (m *SessionManager) reserve(owner string) bool {
 			count++
 		}
 	}
-	if total >= m.cfg.MaxSessions || count >= m.cfg.PerPrincipal {
+	if m.ctx.Err() != nil || total >= m.cfg.MaxSessions || count >= m.cfg.PerPrincipal {
 		return false
 	}
 	m.pending[owner]++
@@ -119,17 +121,47 @@ func (m *SessionManager) start(ctx context.Context, owner, channel, quality stri
 	life, cancel := context.WithCancel(m.ctx)
 	s := &Session{ID: id, Owner: owner, Dir: dir, Expires: time.Now().UTC().Add(m.cfg.Lifetime).Truncate(time.Second), Last: time.Now(), cancel: cancel, done: make(chan struct{})}
 	m.mu.Lock()
+	if m.ctx.Err() != nil {
+		m.mu.Unlock()
+		cancel()
+		os.RemoveAll(dir)
+		return nil, m.ctx.Err()
+	}
 	m.sessions[id] = s
-	m.mu.Unlock()
 	m.wg.Add(1)
+	m.mu.Unlock()
 	go func() {
 		defer m.wg.Done()
 		defer close(s.done)
 		defer os.RemoveAll(dir)
 		defer cancel()
+		if strings.HasPrefix(channel, "clip:") {
+			select {
+			case m.recordingGate <- struct{}{}:
+				defer func() { <-m.recordingGate }()
+			case <-life.Done():
+				return
+			}
+		}
 		// Copy only; TS demuxer adjusts discontinuous input timestamps. No upstream
 		// URL is ever passed to FFmpeg, so its protocol access is pipe-only.
 		cmd := exec.CommandContext(life, m.cfg.FFmpeg, "-hide_banner", "-loglevel", "error", "-fflags", "+genpts+discardcorrupt", "-dts_delta_threshold", "1", "-probesize", "262144", "-analyzeduration", "500000", "-protocol_whitelist", "pipe", "-f", "mpegts", "-i", "pipe:0", "-map", "0:v:0", "-map", "0:a:0?", "-c", "copy", "-bsf:a", "setts=ts='if(eq(N,0),TS,max(TS,PREV_OUTDTS+DURATION))'", "-avoid_negative_ts", "make_zero", "-f", "hls", "-hls_time", "2", "-hls_list_size", "10", "-hls_delete_threshold", "3", "-hls_flags", "delete_segments+temp_file+discont_start", "-hls_segment_filename", filepath.Join(dir, "seg%09d.ts"), filepath.Join(dir, "index.m3u8"))
+		if strings.HasPrefix(channel, "clip:") {
+			for i, arg := range cmd.Args {
+				if arg == "-probesize" {
+					cmd.Args[i+1] = "5242880"
+				}
+				if arg == "-analyzeduration" {
+					cmd.Args[i+1] = "5000000"
+				}
+				if arg == "-hls_list_size" {
+					cmd.Args[i+1] = "0"
+				}
+				if arg == "-hls_flags" {
+					cmd.Args[i+1] = "temp_file+discont_start"
+				}
+			}
+		}
 		process(cmd)
 		input, e := cmd.StdinPipe()
 		if e != nil {
@@ -145,7 +177,10 @@ func (m *SessionManager) start(ctx context.Context, owner, channel, quality stri
 			_ = m.provider.Stream(life, channel, quality, m.policy.Enabled(), input)
 			input.Close()
 		}()
-		_ = cmd.Wait()
+		runErr := cmd.Wait()
+		if strings.HasPrefix(channel, "clip:") && runErr == nil {
+			<-life.Done()
+		}
 		cancel()
 		input.Close()
 		<-finished

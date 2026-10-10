@@ -24,19 +24,24 @@ import (
 
 var identifier = regexp.MustCompile(`^[a-zA-Z0-9_-]{1,199}$`)
 var loginPattern = regexp.MustCompile(`^[a-zA-Z0-9_]{1,25}$`)
+var initPattern = regexp.MustCompile(`^init[0-9]{9,15}\.mp4$`)
+var vodIDPattern = regexp.MustCompile(`^[0-9]{1,20}$`)
 var segmentPattern = regexp.MustCompile(`^seg[0-9]{9,15}\.ts$`)
 
-const Version = "0.1.1"
+const Version = "0.2.0"
 
 type Server struct {
-	cfg      Config
-	manager  *SessionManager
-	provider Provider
-	policy   AdPolicy
-	ready    atomic.Bool
-	mu       sync.Mutex
-	rates    map[string][]time.Time
-	gate     chan struct{}
+	cfg       Config
+	manager   *SessionManager
+	provider  Provider
+	policy    AdPolicy
+	ready     atomic.Bool
+	mu        sync.Mutex
+	rates     map[string][]time.Time
+	gate      chan struct{}
+	upstream  *http.Client
+	downloads *downloadManager
+	mediaGate chan struct{}
 }
 
 func New(c Config, p Provider) (*Server, error) {
@@ -47,6 +52,9 @@ func New(c Config, p Provider) (*Server, error) {
 		return nil, e
 	}
 	s := &Server{cfg: c, provider: p, manager: m, policy: policy, rates: map[string][]time.Time{}, gate: make(chan struct{}, 64)}
+	s.mediaGate = make(chan struct{}, 4)
+	s.upstream = upstreamClient()
+	s.downloads = newDownloadManager(s)
 	s.checkReady()
 	m.wg.Add(1)
 	go func() {
@@ -69,7 +77,13 @@ func (s *Server) checkReady() {
 	defer cancel()
 	s.ready.Store(s.provider.Ready(ctx) && exec.CommandContext(ctx, s.cfg.FFmpeg, "-version").Run() == nil)
 }
-func (s *Server) Close() { s.manager.Close() }
+func (s *Server) Close() {
+	s.downloads.close()
+	s.manager.Close()
+	if t, ok := s.upstream.Transport.(*http.Transport); ok {
+		t.CloseIdleConnections()
+	}
+}
 func writeJSON(w http.ResponseWriter, status int, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Cache-Control", "no-store")
@@ -144,7 +158,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if p == "/v1/capabilities" && r.Method == "GET" {
-		writeJSON(w, 200, map[string]any{"api_version": "v1", "playback_protocols": []string{"hls"}, "live": s.ready.Load() && s.provider.Live(), "vod": false, "clips": false, "quality_selection": s.ready.Load() && s.provider.Live(), "downloads": false, "authorized_downloads_only": true, "ad_handling": s.policy.Mode()})
+		writeJSON(w, 200, map[string]any{"api_version": "v1", "playback_protocols": []string{"hls"}, "live": s.ready.Load() && s.provider.Live(), "vod": s.recorded(), "clips": s.recorded(), "quality_selection": s.ready.Load() && s.provider.Live(), "downloads": s.recorded(), "authorized_downloads_only": !s.recorded(), "client_side_downloads": s.recorded(), "ad_handling": s.policy.Mode()})
 		return
 	}
 	if strings.HasPrefix(p, "/media/") {
@@ -162,7 +176,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if strings.HasPrefix(p, "/v1/downloads") {
-		problem(w, 400, "unsupported_capability", "Authorized downloads are not implemented", false)
+		s.downloadRoute(w, r, owner, p)
 		return
 	}
 	if p == "/v1/playback/sessions" && r.Method == "POST" {
@@ -204,15 +218,22 @@ func (s *Server) create(w http.ResponseWriter, r *http.Request, owner string) {
 		problem(w, 400, "invalid_request", "One JSON object required", false)
 		return
 	}
+	target := strings.ToLower(req.Channel)
 	if req.ContentType == "vod" || req.ContentType == "clip" {
-		if req.ID == "" || len(req.ID) > 200 || req.Quality == nil {
+		valid := identifier.MatchString(req.ID)
+		if req.ContentType == "vod" {
+			valid = vodIDPattern.MatchString(req.ID)
+		}
+		if !valid || req.Quality == nil || len(*req.Quality) > 40 || *req.Quality == "" {
 			problem(w, 400, "invalid_request", "Content ID and requested quality required", false)
 			return
 		}
-		problem(w, 400, "unsupported_capability", "Only live playback is implemented", false)
-		return
-	}
-	if req.ContentType != "live" || !loginPattern.MatchString(req.Channel) || req.Quality == nil || len(*req.Quality) > 40 || *req.Quality == "" {
+		if !s.recorded() {
+			problem(w, 400, "unsupported_capability", "Recorded playback unavailable", false)
+			return
+		}
+		target = req.ContentType + ":" + req.ID
+	} else if req.ContentType != "live" || !loginPattern.MatchString(req.Channel) || req.Quality == nil || len(*req.Quality) > 40 || *req.Quality == "" {
 		problem(w, 400, "invalid_request", "Live channel and requested quality required", false)
 		return
 	}
@@ -229,7 +250,7 @@ func (s *Server) create(w http.ResponseWriter, r *http.Request, owner string) {
 	ctx, cancel := context.WithTimeout(r.Context(), s.cfg.Startup)
 	defer cancel()
 	probe, pcancel := context.WithTimeout(ctx, 20*time.Second)
-	qs, e := s.provider.Qualities(probe, strings.ToLower(req.Channel))
+	qs, e := s.provider.Qualities(probe, target)
 	pcancel()
 	if e != nil {
 		var limit UpstreamLimit
@@ -257,7 +278,12 @@ func (s *Server) create(w http.ResponseWriter, r *http.Request, owner string) {
 	if chosenQuality == "auto" {
 		chosenQuality = qs[len(qs)-1]
 	}
-	session, e := s.manager.start(ctx, owner, strings.ToLower(req.Channel), chosenQuality)
+	var session *Session
+	if req.ContentType == "vod" {
+		session, e = s.manager.startRecorded(ctx, owner, target, chosenQuality)
+	} else {
+		session, e = s.manager.start(ctx, owner, target, chosenQuality)
+	}
 	if e != nil {
 		problem(w, 503, "source_unavailable", "Playback could not start within bounded startup time", true)
 		return
@@ -266,7 +292,11 @@ func (s *Server) create(w http.ResponseWriter, r *http.Request, owner string) {
 	if s.policy.Enabled() {
 		filtering = "enabled"
 	}
-	writeJSON(w, 201, map[string]any{"session_id": session.ID, "hls_url": s.signedURL(session, "master.m3u8"), "qualities": qs, "selected_quality": chosenQuality, "expires_at": session.Expires.Format(time.RFC3339), "player_capabilities": []string{"pause", "pip"}, "filtering_status": filtering, "state": "playing"})
+	playerCaps := []string{"pause", "pip"}
+	if req.ContentType != "live" {
+		playerCaps = append(playerCaps, "seek")
+	}
+	writeJSON(w, 201, map[string]any{"session_id": session.ID, "hls_url": s.signedURL(session, "master.m3u8"), "qualities": qs, "selected_quality": chosenQuality, "expires_at": session.Expires.Format(time.RFC3339), "player_capabilities": playerCaps, "filtering_status": filtering, "state": "playing"})
 }
 func (s *Server) signature(id, resource string, exp int64) string {
 	h := hmac.New(sha256.New, s.cfg.Key)
@@ -287,7 +317,7 @@ func (s *Server) media(w http.ResponseWriter, r *http.Request, path string) {
 		return
 	}
 	id, resource := parts[0], parts[1]
-	if resource != "master.m3u8" && resource != "index.m3u8" && !segmentPattern.MatchString(resource) {
+	if resource != "master.m3u8" && resource != "index.m3u8" && !segmentPattern.MatchString(resource) && !initPattern.MatchString(resource) {
 		problem(w, 404, "content_unavailable", "Media unavailable", false)
 		return
 	}
@@ -308,6 +338,10 @@ func (s *Server) media(w http.ResponseWriter, r *http.Request, path string) {
 	if resource == "master.m3u8" {
 		w.Header().Set("Content-Type", "application/vnd.apple.mpegurl")
 		fmt.Fprintf(w, "#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-STREAM-INF:BANDWIDTH=12000000\n%s\n", s.signedURL(sess, "index.m3u8"))
+		return
+	}
+	if sess.Plan != nil {
+		s.recordedMedia(w, r, sess, resource)
 		return
 	}
 	if resource == "index.m3u8" {
@@ -364,4 +398,9 @@ func (s *Server) media(w http.ResponseWriter, r *http.Request, path string) {
 	}
 	w.Header().Set("Content-Type", "video/mp2t")
 	http.ServeContent(w, r, resource, info.ModTime(), f)
+}
+
+func (s *Server) recorded() bool {
+	p, ok := s.provider.(RecordedProvider)
+	return ok && p.Recorded() && s.ready.Load()
 }

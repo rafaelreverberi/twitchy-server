@@ -1,4 +1,4 @@
-"""Private media-byte worker. Never returns upstream URLs or credentials to Go/clients."""
+"""Private media-byte worker. Public URLs stay private to the source; never sent to clients or logs."""
 import argparse
 import pathlib
 import tempfile
@@ -17,12 +17,13 @@ from urllib.parse import urlsplit
 from streamlink import Streamlink
 from streamlink.exceptions import StreamError
 from streamlink.plugins.twitch import TwitchHLSStream, TwitchHLSStreamReader, TwitchHLSStreamWorker, TwitchHLSStreamWriter, TwitchM3U8Parser
+from streamlink.stream.http import HTTPStream
 from streamlink.stream.hls import HLSStream, HLSStreamReader, HLSStreamWorker, HLSStreamWriter
 import urllib3.util.connection
 
 logging.disable(logging.CRITICAL)
 LOGIN = re.compile(r"[a-zA-Z0-9_]{1,25}\Z")
-DOMAINS = ("twitch.tv", "ttvnw.net", "twitchcdn.net", "jtvnw.net")
+DOMAINS = ("twitch.tv", "ttvnw.net", "twitchcdn.net", "jtvnw.net", "cloudfront.net")
 
 
 def allowed_url(url):
@@ -193,11 +194,13 @@ def session(test=False):
 
 
 def streams(s, login, cache_dir=None, fresh=False):
-    if not LOGIN.fullmatch(login):
-        raise ValueError("invalid login")
+    url='https://www.twitch.tv/'+login.lower()
+    if login.startswith('vod:') and re.fullmatch(r'[0-9]{1,20}',login[4:]): url='https://www.twitch.tv/videos/'+login[4:]
+    elif login.startswith('clip:') and re.fullmatch(r'[a-zA-Z0-9_-]{1,199}',login[5:]): url='https://clips.twitch.tv/'+login[5:]
+    elif not LOGIN.fullmatch(login): raise ValueError('invalid content identifier')
     cache = pathlib.Path(cache_dir) if cache_dir else None
     path = cache/(login.lower()+'.json') if cache else None
-    if path and not fresh:
+    if path and not fresh and not login.startswith("clip:"):
         try:
             data=json.loads(path.read_text())
             if 0 <= time.time()-data['created'] <= 15 and data['channel']==login.lower():
@@ -207,7 +210,7 @@ def streams(s, login, cache_dir=None, fresh=False):
         except (OSError,ValueError,KeyError,TypeError): pass
     # Enumerate the master once. Do not serially fetch every rendition: the
     # selected playlist is validated by its real reader before any API success.
-    _, plugin_class, url = s.resolve_url('https://www.twitch.tv/'+login.lower())
+    _, plugin_class, url = s.resolve_url(url)
     plugin=plugin_class(s,url)
     def master(url, restricted_bitrates, **params):
         try:
@@ -221,8 +224,8 @@ def streams(s, login, cache_dir=None, fresh=False):
     plugin._get_hls_streams=master
     found = plugin.streams()
     result = {q: stream for q, stream in found.items()
-            if re.fullmatch(r"\d+p(?:\d+)?", q) and isinstance(stream, HLSStream) and type(stream).__name__ == "TwitchHLSStream"}
-    if path and result:
+            if re.fullmatch(r"\d+p(?:\d+)?", q) and ((isinstance(stream, HLSStream) and type(stream).__name__ == "TwitchHLSStream") or (login.startswith("clip:") and isinstance(stream, HTTPStream)))}
+    if path and result and not login.startswith("clip:"):
         cache.mkdir(mode=0o700,parents=True,exist_ok=True)
         # Bounded public-channel acquisition cache, not a media/session cache.
         for entry in cache.iterdir():
@@ -246,6 +249,41 @@ def streams(s, login, cache_dir=None, fresh=False):
     return result
 
 
+def vod_plan(s, chosen, ads):
+    response=s.http.get(chosen.url,stream=True,timeout=15)
+    response.raise_for_status()
+    body=bytearray()
+    for chunk in response.iter_content(65536):
+        if len(body)+len(chunk)>8*1024*1024: raise StreamError('playlist size limit')
+        body.extend(chunk)
+    response.close()
+    playlist=ConservativeParser(chosen.url).parse(body.decode('utf-8'))
+    if not playlist.segments or len(playlist.segments)>20000: raise StreamError('playlist segment limit')
+    resources={};lines=['#EXTM3U','#EXT-X-VERSION:7','#EXT-X-PLAYLIST-TYPE:VOD','#EXT-X-MEDIA-SEQUENCE:0']
+    maximum=1;last_map=None;removed=False;duration=0
+    for segment in playlist.segments:
+        if ads and segment.ad: removed=True;continue
+        if segment.key and segment.key.method!='NONE': raise StreamError('encrypted recorded playlist unsupported')
+        if segment.byterange: raise StreamError('byte-range recorded playlist unsupported')
+        if not allowed_url(segment.uri): raise StreamError('destination denied')
+        if removed or segment.discontinuity: lines.append('#EXT-X-DISCONTINUITY')
+        removed=False
+        if segment.map:
+            if segment.map.byterange or (segment.map.key and segment.map.key.method!='NONE'): raise StreamError('unsupported recorded initialization')
+            if segment.map.uri!=last_map:
+                if not allowed_url(segment.map.uri): raise StreamError('destination denied')
+                name='init%09d.mp4'%len(resources);resources[name]=segment.map.uri
+                lines.append('#EXT-X-MAP:URI="'+name+'"');last_map=segment.map.uri
+        name='seg%09d.ts'%len(resources);resources[name]=segment.uri
+        length=float(segment.duration);maximum=max(maximum,length);duration+=length
+        lines.extend(['#EXTINF:%.6f,'%length,name])
+    if not resources or duration<=0: raise StreamError('no normal recorded content')
+    import math
+    lines.insert(2,'#EXT-X-TARGETDURATION:'+str(math.ceil(maximum)))
+    lines.append('#EXT-X-ENDLIST')
+    return {'playlist':'\n'.join(lines)+'\n','resources':resources,'duration':duration}
+
+
 def run(args):
     s = session()
     found = streams(s, args.channel, os.environ.get("RESOLVER_CACHE_DIR"), args.fresh)
@@ -263,6 +301,23 @@ def run(args):
     if q not in found:
         return 5
     chosen = found[q]
+    if args.mode == 'plan':
+        plan=vod_plan(s, chosen, args.adblock=='on')
+        print(json.dumps(plan))
+        return 0
+    if args.channel.startswith('vod:'): s.set_option('hls-live-restart',True)
+    if args.channel.startswith("clip:") and isinstance(chosen,HTTPStream):
+        body=bytearray()
+        with chosen.open() as reader:
+            while True:
+                chunk=reader.read(65536)
+                if not chunk: break
+                if len(body)+len(chunk)>64*1024*1024: return 7
+                body.extend(chunk)
+        result=subprocess.run([os.environ.get('FFMPEG','ffmpeg'),'-v','error','-protocol_whitelist','pipe','-i','pipe:0','-map','0:v:0','-map','0:a:0?','-c','copy','-f','mpegts','pipe:1'],input=body,stdout=subprocess.PIPE,stderr=subprocess.DEVNULL,timeout=30)
+        if result.returncode or len(result.stdout)>80*1024*1024: return 7
+        sys.stdout.buffer.write(result.stdout)
+        return 0
     cls = FilteredStream if args.adblock == "on" else UnfilteredStream
     stream = cls(s, chosen.url)  # Never stream.to_url() as the playback output.
     with stream.open() as reader:
@@ -278,7 +333,7 @@ def run(args):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("mode", choices=["check", "probe", "run"])
+    parser.add_argument("mode", choices=["check", "probe", "run", "plan"])
     parser.add_argument("--channel")
     parser.add_argument("--fresh", action="store_true")
     parser.add_argument("--quality", default="auto")

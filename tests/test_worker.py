@@ -11,7 +11,7 @@ import unittest
 from unittest.mock import patch
 import sys
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
-from worker.reader import ConservativeParser, FilteredStream, UnfilteredStream, allowed_url, secure_network, session, streams
+from worker.reader import ConservativeParser, FilteredStream, UnfilteredStream, allowed_url, secure_network, session, streams, vod_plan
 
 HEADER = '#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-TARGETDURATION:2\n#EXT-X-MEDIA-SEQUENCE:0\n'
 AD = '#EXT-X-DATERANGE:ID="stitched-ad-fixture",CLASS="twitch-stitched-ad",START-DATE="2026-10-10T00:00:02Z",DURATION=2\n'
@@ -60,6 +60,63 @@ def read(upstream, filtered=True):
 
 
 class WorkerTests(unittest.TestCase):
+    def test_run_hls_is_not_mistaken_for_clip_http_stream(self):
+        import io
+        from types import SimpleNamespace
+        from streamlink.plugins.twitch import TwitchHLSStream
+        from worker.reader import run
+        s = session(test=True)
+        chosen = TwitchHLSStream(s, 'https://cdn.ttvnw.net/index.m3u8')
+        for target in ['example', 'vod:123']:
+            output = io.BytesIO()
+            fake = SimpleNamespace(open=lambda: io.BytesIO(b'NORMAL-HLS'))
+            args = SimpleNamespace(channel=target, mode='run', quality='auto', fresh=False, adblock='on')
+            with patch('worker.reader.session', return_value=s), patch('worker.reader.streams', return_value={'360p30':chosen}), patch('worker.reader.FilteredStream', return_value=fake), patch('worker.reader.sys.stdout', SimpleNamespace(buffer=output)):
+                self.assertEqual(run(args), 0)
+            self.assertEqual(output.getvalue(), b'NORMAL-HLS')
+
+    def test_clip_short_reads_are_collected_until_eof(self):
+        import io
+        from types import SimpleNamespace
+        from streamlink.stream.http import HTTPStream
+        from worker.reader import run
+        s = session(test=True)
+        chosen = HTTPStream(s, 'https://cdn.twitchcdn.net/clip.mp4')
+        class ShortReader(io.BytesIO):
+            def read(self, size=-1): return super().read(min(size, 3))
+        output = io.BytesIO()
+        args = SimpleNamespace(channel='clip:Example', mode='run', quality='auto', fresh=False, adblock='on')
+        with patch('worker.reader.session', return_value=s), patch('worker.reader.streams', return_value={'360p30':chosen}), patch.object(chosen, 'open', return_value=ShortReader(b'COMPLETE-MP4')), patch('worker.reader.subprocess.run', return_value=SimpleNamespace(returncode=0,stdout=b'TS-BYTES')) as remux, patch('worker.reader.sys.stdout', SimpleNamespace(buffer=output)):
+            self.assertEqual(run(args), 0)
+            self.assertEqual(remux.call_args.kwargs['input'], b'COMPLETE-MP4')
+        self.assertEqual(output.getvalue(), b'TS-BYTES')
+
+    def test_recorded_plan_filters_ads_and_retains_full_seek_timeline(self):
+        upstream = Upstream(HEADER + AD + segment(0) + segment(1) + segment(2) + '#EXT-X-ENDLIST\n')
+        try:
+            chosen = type('Chosen', (), {'url': upstream.url})()
+            with patch('worker.reader.allowed_url', return_value=True):
+                plan = vod_plan(session(test=True), chosen, True)
+                self.assertEqual(plan['duration'], 4)
+                self.assertEqual(len(plan['resources']), 2)
+                self.assertTrue(all(not u.endswith('/1.ts') for u in plan['resources'].values()))
+                self.assertIn('#EXT-X-DISCONTINUITY', plan['playlist'])
+                self.assertIn('#EXT-X-ENDLIST', plan['playlist'])
+                self.assertNotIn(upstream.url.split('/index')[0], plan['playlist'])
+                unfiltered = vod_plan(session(test=True), chosen, False)
+                self.assertEqual(unfiltered['duration'], 6)
+                self.assertEqual(len(upstream.hits), 2)  # Only manifests; no archived media fetched.
+        finally: upstream.close()
+
+    def test_recorded_plan_rejects_encryption_ranges_and_bad_destinations(self):
+        for tag in ['#EXT-X-KEY:METHOD=AES-128,URI="key"', '#EXT-X-BYTERANGE:188@0', '']:
+            upstream = Upstream(HEADER + tag + '\n' + segment(0) + '#EXT-X-ENDLIST\n')
+            try:
+                chosen = type('Chosen', (), {'url': upstream.url})()
+                with patch('worker.reader.allowed_url', return_value=bool(tag)):
+                    with self.assertRaises(Exception): vod_plan(session(test=True), chosen, True)
+            finally: upstream.close()
+
     def test_midroll_actual_bytes_and_raw_url_does_not_filter(self):
         upstream = Upstream(HEADER + AD + segment(0) + segment(1) + segment(2, discontinuity=True) + '#EXT-X-ENDLIST\n')
         try:

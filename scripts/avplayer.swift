@@ -5,13 +5,14 @@ import AVFoundation
     @MainActor static func main() async throws {
         let base = CommandLine.arguments[1].trimmingCharacters(in: CharacterSet(charactersIn: "/"))
         let channel = CommandLine.arguments[2]
+        let type = CommandLine.arguments.count > 3 ? CommandLine.arguments[3] : "live"
         let tokens = try JSONSerialization.jsonObject(with: Data(contentsOf: URL(fileURLWithPath: "secrets/tokens.json"))) as! [String:String]
         let token = tokens.values.first!
         var request = URLRequest(url: URL(string: base + "/v1/playback/sessions")!)
         request.httpMethod = "POST"
         request.setValue("Bearer " + token, forHTTPHeaderField: "Authorization")
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.httpBody = try JSONSerialization.data(withJSONObject: ["content_type":"live", "channel_login":channel, "requested_quality":"360p30"])
+        request.httpBody = try JSONSerialization.data(withJSONObject: ["content_type":type, type == "live" ? "channel_login" : "content_id":channel, "requested_quality":"auto"])
         request.timeoutInterval = 100
         let (data,response) = try await URLSession.shared.data(for: request)
         guard (response as? HTTPURLResponse)?.statusCode == 201,
@@ -26,7 +27,16 @@ import AVFoundation
             if player.currentTime().seconds >= 5 || player.status == .failed {break}
         }
         let seconds = player.currentTime().seconds
-        let success = player.status == .readyToPlay && seconds >= 5
+        var success = player.status == .readyToPlay && seconds >= 5
+        if type == "vod", success {
+            await player.seek(to: CMTime(seconds: 120, preferredTimescale: 600))
+            for _ in 0..<20 {
+                try await Task.sleep(for: .seconds(1))
+                if player.currentTime().seconds >= 122 || player.status == .failed { break }
+            }
+            success = player.currentTime().seconds >= 122 && player.timeControlStatus == .playing
+            print("VOD seek to 120 seconds: \(success ? "passed" : "failed")")
+        }
         player.pause();player.replaceCurrentItem(with:nil)
         var remove = URLRequest(url:URL(string:base+"/v1/playback/sessions/"+id)!)
         remove.httpMethod="DELETE";remove.setValue("Bearer "+token,forHTTPHeaderField:"Authorization")

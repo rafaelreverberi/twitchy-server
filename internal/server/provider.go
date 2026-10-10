@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 )
@@ -91,7 +92,11 @@ func (p StreamlinkProvider) Stream(ctx context.Context, channel, quality string,
 	}
 	// Reacquire Twitch token/playlist after EOF/failure. Bounded attempts, fixed
 	// quality, same continuous remuxer; no rapid mutation or reload loop.
-	for attempt := 0; attempt < 4; attempt++ {
+	attempts := 4
+	if strings.HasPrefix(channel, "vod:") || strings.HasPrefix(channel, "clip:") {
+		attempts = 1
+	}
+	for attempt := 0; attempt < attempts; attempt++ {
 		if attempt > 0 {
 			select {
 			case <-ctx.Done():
@@ -112,6 +117,9 @@ func (p StreamlinkProvider) Stream(ctx context.Context, channel, quality string,
 		err := cmd.Run()
 		if exit, ok := err.(*exec.ExitError); ok && exit.ExitCode() == 7 {
 			return ErrProvider
+		}
+		if attempts == 1 && err == nil {
+			return nil
 		}
 		if ctx.Err() != nil {
 			return ctx.Err()
