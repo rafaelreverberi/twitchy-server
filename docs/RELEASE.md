@@ -1,3 +1,17 @@
+# v0.1.1 release evidence
+
+Source commit: `9ec0f9f3ad5ae4519c4f8e309417e926263f277c` (tag `v0.1.1`). Repository and GHCR package remain private.
+
+Verified immutable image:
+
+```
+ghcr.io/rafaelreverberi/twitchy-server:0.1.1@sha256:79cf103481bad77c4dc187004658a5984b1869102f5da2d6a82bd0144ba103a7
+```
+
+[Release CI](https://github.com/rafaelreverberi/twitchy-server/actions/runs/38039397819) passed all Go/worker/contract tests and the controlled Docker HLS smoke, verified both linux/amd64 and linux/arm64 manifests with SBOM/provenance, pulled the exact published image on native amd64, ran health/capabilities checks and confirmed private package visibility. Local arm64 Docker and actual Twitchy macOS playback/720p60 switching passed. Detailed evidence and limits are in [VERIFICATION.md](VERIFICATION.md). The app changes are local commit `d27f823`, not a published app release.
+
+The local running server is a v0.1.1 build. For an authorized private GHCR login with read:packages, set `TWITCHY_IMAGE` to the reference above and run `docker compose pull server` followed by `docker compose up -d --no-build server`. Keep the previous digest for rollback. Release assets contain exact Debian FFmpeg corresponding source, verification metadata and SHA-256 checksums.
+
 # v0.1.0 release evidence
 
 Source commit: `929329e652a8c13ee5aa017916fc16bd53d6fa97` (tag `v0.1.0`).
