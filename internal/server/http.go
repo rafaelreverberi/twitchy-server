@@ -266,7 +266,7 @@ func (s *Server) create(w http.ResponseWriter, r *http.Request, owner string) {
 	if s.policy.Enabled() {
 		filtering = "enabled"
 	}
-	writeJSON(w, 201, map[string]any{"session_id": session.ID, "hls_url": s.signedURL(session, "master.m3u8"), "qualities": qs, "expires_at": session.Expires.Format(time.RFC3339), "player_capabilities": []string{"pause", "pip"}, "filtering_status": filtering, "state": "playing"})
+	writeJSON(w, 201, map[string]any{"session_id": session.ID, "hls_url": s.signedURL(session, "master.m3u8"), "qualities": qs, "selected_quality": chosenQuality, "expires_at": session.Expires.Format(time.RFC3339), "player_capabilities": []string{"pause", "pip"}, "filtering_status": filtering, "state": "playing"})
 }
 func (s *Server) signature(id, resource string, exp int64) string {
 	h := hmac.New(sha256.New, s.cfg.Key)

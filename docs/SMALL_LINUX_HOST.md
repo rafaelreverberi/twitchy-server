@@ -1,0 +1,11 @@
+# Small Linux hosts and Best quality
+
+Intel NUC-style x86-64 Linux hosts are supported by the linux/amd64 build; linux/arm64 is also supported. Published v0.1.1 was pulled and run on native amd64 CI. No particular NUC model has been load-tested. 32-bit systems are not targeted.
+
+The server copies encoded H.264/AAC packets (`-c copy`) and remuxes them; it does not decode or transcode video. A GPU or Quick Sync is not required. Stable fMP4 needs a short FFmpeg process per complete clean fragment as well as the continuous HLS remuxer, so work is not zero and scales with concurrent sessions. Each session has independent upstream acquisition and output, even for the same channel. More sessions consume more CPU, memory, disk traffic and bandwidth.
+
+For a small personal host, two CPU cores and 2–4 GiB of total system RAM are a reasonable starting provision, not a measured minimum or capacity guarantee. Start with `MAX_SESSIONS=2` and `SESSIONS_PER_PRINCIPAL=2` in `.env`; retain the existing 768 MiB / 2 CPU container limits and observe `docker stats`. These are resource ceilings, not constant usage. Use SSD storage and a reliable network connection. For an example 8 Mbit/s stream, two independent sessions require approximately 16 Mbit/s incoming and 16 Mbit/s outgoing before protocol overhead. Off-LAN viewers require sufficient upload bandwidth and trusted HTTPS.
+
+Twitchy calls its existing `auto` quality selector **Best**. At session creation the server selects the highest available supported rendition. It does not create missing resolutions or adapt to bandwidth. The optional `selected_quality` response lets the updated app display `Best (1080p60)` instead of guessing from the available list. This addition is backward-compatible; older sources display only Best. The choice is reevaluated when a new session starts, not continuously during an existing session.
+
+This follow-up is currently in the source checkout and the locally rebuilt server/app; the v0.1.1 registry image predates `selected_quality`. Build from this updated checkout to include the resolved-quality label. Existing independently generated source credentials and source authentication remain unchanged. When moving to a NUC, configure the app with that host's trusted HTTPS source URL rather than localhost; localhost refers to the device running the app.

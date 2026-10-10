@@ -181,17 +181,21 @@ func TestSignedHLSOwnershipRevocationAndTTL(t *testing.T) {
 	host := httptest.NewServer(s)
 	defer host.Close()
 	s.cfg.BaseURL = host.URL + c.Prefix
-	w := request(t, s, "POST", "/source/v1/playback/sessions", "a", `{"content_type":"live","channel_login":"fixture","requested_quality":"360p"}`)
+	w := request(t, s, "POST", "/source/v1/playback/sessions", "a", `{"content_type":"live","channel_login":"fixture","requested_quality":"auto"}`)
 	if w.Code != 201 {
 		t.Fatalf("%d %s", w.Code, w.Body.String())
 	}
 	record(t, "/v1/playback/sessions", "post", w)
 	var response struct {
-		ID  string `json:"session_id"`
-		URL string `json:"hls_url"`
+		ID              string `json:"session_id"`
+		URL             string `json:"hls_url"`
+		SelectedQuality string `json:"selected_quality"`
 	}
 	if json.Unmarshal(w.Body.Bytes(), &response) != nil {
 		t.Fatal("decode")
+	}
+	if response.SelectedQuality != "360p" {
+		t.Fatal("server did not report resolved best quality")
 	}
 	get := func(url string) (int, string) {
 		t.Helper()

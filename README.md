@@ -71,3 +71,5 @@ docker build --target smoke -t twitchy-server:smoke .
 ```
 
 The release binary cannot enable the fixture provider. The separate smoke target exercises HTTP → signed HLS → FFmpeg decode → DELETE → cleanup. Worker tests additionally prove ad bytes/pixels are absent, pause/resume works, and a raw URL does not activate filtering. See [verification evidence and boundaries](docs/VERIFICATION.md), [ad handling](docs/ADBLOCK.md), [architecture/configuration](docs/ARCHITECTURE.md), [troubleshooting](docs/TROUBLESHOOTING.md), and [third-party notices](THIRD_PARTY_NOTICES.md).
+
+Small Linux hosts / Intel NUC and the Best quality selector: [deployment notes](docs/SMALL_LINUX_HOST.md).
