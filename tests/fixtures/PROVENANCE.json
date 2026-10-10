@@ -1,0 +1,8 @@
+{
+  "type": "synthetic marker example, not captured live advertising",
+  "origin": "https://github.com/streamlink/streamlink/blob/8.6.2/tests/plugins/test_twitch.py",
+  "tag_object": "f33007410e7a2b5717a095a23b4978f774a1493a",
+  "original_test_source_sha256": "1e11934620d5168ab0df96a8293d2a063804506334976e58917701216f11214b",
+  "example_sha256": "e0221379c2f878f8f9c271f0c5c4148a7cf2ea5ad5d0f2861e4cf890fa54c2ab",
+  "changes": "Invented IDs, dates and relative filenames; only tag structure follows upstream tests"
+}

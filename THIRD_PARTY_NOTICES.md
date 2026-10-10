@@ -1,0 +1,14 @@
+# Third-party notices
+
+Our server code: MIT, [LICENSE](LICENSE). Separate upstream components retain their licenses.
+
+- **Twitchy** API documents and verbatim Swift model/JSON decoder definitions: MIT; original [license snapshot](docs/contract/TWITCHY-LICENSE.txt). Provenance/commit/hashes: [PROVENANCE.json](docs/contract/PROVENANCE.json). The API snapshot is unchanged. Twitchy's copyright notice is preserved in the accompanying license.
+- **Streamlink 8.6.2**: BSD-2-Clause; [license](docs/contract/STREAMLINK-LICENSE.txt), [upstream source](https://github.com/streamlink/streamlink/tree/8.6.2). We import its reader/parser/writer and extend them; no code is downloaded at runtime. Wheel metadata/license files remain installed in the image. Synthetic marker examples follow its tests' field structure, with provenance. Dependencies' exact versions/hashes are in `requirements.lock` and their distribution notices remain in installed metadata.
+- **TwitchAdSolutions fork**: MIT; reviewed README snapshot only, no VAFT script is executed or copied into the backend. [Accompanying license](docs/contract/TwitchAdSolutions-LICENSE.txt), pinned fork commit in provenance. No streamlink-ttvlol code is bundled.
+- **FFmpeg Debian 7:5.1.9-0+deb12u1** and matching libraries: this Debian build enables GPL features, GPL-2.0-or-later; packaging may include libraries under LGPL/GPL/BSD/other licenses. Notices remain under `/usr/share/doc/*/copyright` in the image. See [the exact Debian source version](https://snapshot.debian.org/package/ffmpeg/7%3A5.1.9-0%2Bdeb12u1/) and the source-bundle procedure below. FFmpeg runs as a separate process; this project does not link it into Go. H.264/AAC patent licensing can depend on distribution/use jurisdiction.
+- **Go 1.26.5**, Python 3.12.12 and Debian Bookworm runtime: their original BSD/PSF/package notices apply. Go and Python base images are pinned by multiarch index digest. System packages are drawn from fixed 2026-10-09 Debian/security snapshots. The image retains installed notices; an SBOM is attached by the release publisher.
+- Optional **Caddy 2.11.2** image: Apache-2.0 upstream; exact index digest pinned in Compose. Caddy is a separate container.
+
+## Corresponding FFmpeg source
+
+`scripts/export_ffmpeg_source.sh` downloads the original Debian FFmpeg source files and packaging patches for the exact runtime version into a checksummed archive. Release assets include this archive. It does not contain source credentials or media. Recipients can obtain it alongside the image, or use the exact Debian source links above. The runtime's other system-library notices identify their upstream sources; Debian's fixed snapshot supplies matching source packages. Preserve these notices and source availability when redistributing modified images. This repository's Dockerfile and lock files provide the build recipe, not an assertion that different architectures were exercised on physical hardware.

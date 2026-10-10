@@ -1,0 +1,79 @@
+services:
+  server:
+    image: ${TWITCHY_IMAGE:-twitchy-server:local}
+    build: .
+    init: true
+    restart: unless-stopped
+    ports:
+      - "${BIND_ADDR:-127.0.0.1}:${PORT:-8080}:8080"
+    environment:
+      PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:-http://localhost:8080}
+      ALLOW_HTTP: ${ALLOW_HTTP:-true}
+      ADBLOCK: ${ADBLOCK:-on}
+      MAX_SESSIONS: ${MAX_SESSIONS:-8}
+      SESSIONS_PER_PRINCIPAL: ${SESSIONS_PER_PRINCIPAL:-2}
+      SESSION_LIFETIME: ${SESSION_LIFETIME:-12h}
+      SESSION_IDLE_TTL: ${SESSION_IDLE_TTL:-2m}
+      SESSION_STARTUP_TIMEOUT: ${SESSION_STARTUP_TIMEOUT:-90s}
+      SESSION_MAX_DISK_BYTES: ${SESSION_MAX_DISK_BYTES:-268435456}
+    volumes:
+      - media:/state
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    pids_limit: 128
+    mem_limit: 768m
+    cpus: 2
+    stop_grace_period: 15s
+    logging:
+      driver: json-file
+      options: {max-size: "5m", max-file: "2"}
+  secrets-init:
+    profiles: [setup]
+    image: ${TWITCHY_IMAGE:-twitchy-server:local}
+    user: "0:0"
+    entrypoint: [python, /app/init_secrets.py]
+    network_mode: none
+    read_only: true
+    restart: "no"
+    secrets:
+      - source: source_tokens
+        target: tokens.json
+      - source: signing_key
+        target: signing.key
+    volumes: [media:/state]
+    cap_drop: [ALL]
+    cap_add: [CHOWN, DAC_OVERRIDE, FOWNER]
+    security_opt: [no-new-privileges:true]
+    mem_limit: 64m
+    pids_limit: 16
+  caddy:
+    profiles: [https]
+    image: caddy:2.11.2-alpine@sha256:834468128c7696cec0ceea6172f7d692daf645ae51983ca76e39da54a97c570d
+    restart: unless-stopped
+    ports: ["80:80", "443:443", "443:443/udp"]
+    environment:
+      SOURCE_DOMAIN: ${SOURCE_DOMAIN:-localhost}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    cap_drop: [ALL]
+    cap_add: [NET_BIND_SERVICE]
+    security_opt: [no-new-privileges:true]
+    mem_limit: 128m
+    cpus: 0.5
+    logging:
+      driver: json-file
+      options: {max-size: "5m", max-file: "2"}
+secrets:
+  source_tokens:
+    file: ./secrets/tokens.json
+  signing_key:
+    file: ./secrets/signing.key
+volumes:
+  media:
+  caddy_data:
+  caddy_config:

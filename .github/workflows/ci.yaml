@@ -1,0 +1,85 @@
+name: Verify and publish
+on:
+  push:
+    branches: [main, 'codex/**']
+    tags: ['v*']
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  verify:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with: {go-version: '1.26.5', cache: false}
+      - name: Dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg python3-venv
+          python3 -m venv .venv
+          .venv/bin/pip install --require-hashes -r requirements-test.lock
+      - name: Go, HLS byte filtering, remux, and contract tests
+        run: |
+          mkdir -p .local
+          CONTRACT_REPORT="$PWD/.local/contract-responses.json" go test -race ./...
+          go vet ./...
+          .venv/bin/python -m unittest discover -s tests -v
+          .venv/bin/python scripts/check_contract.py .local/contract-responses.json
+      - name: Build release and isolated fixture smoke images
+        run: |
+          docker build -t twitchy-server:ci .
+          docker build --target smoke -t twitchy-server:smoke .
+          scripts/container_smoke.sh
+  swift-contract:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with: {go-version: '1.26.5', cache: false}
+      - run: |
+          brew install ffmpeg
+          mkdir -p .local
+          CONTRACT_REPORT="$PWD/.local/contract-responses.json" go test ./...
+          scripts/check_swift.sh
+  publish:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [verify, swift-contract]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130 # v3
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Version
+        id: version
+        shell: bash
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          echo "value=$version" >> "$GITHUB_OUTPUT"
+      - uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
+        id: publish
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ghcr.io/rafaelreverberi/twitchy-server:${{ steps.version.outputs.value }}
+          provenance: mode=max
+          sbom: true
+          labels: |
+            org.opencontainers.image.source=https://github.com/rafaelreverberi/twitchy-server
+            org.opencontainers.image.version=${{ steps.version.outputs.value }}
+            org.opencontainers.image.revision=${{ github.sha }}
+      - name: Record immutable digest
+        env:
+          DIGEST: ${{ steps.publish.outputs.digest }}
+          VERSION: ${{ steps.version.outputs.value }}
+        run: echo "Image ghcr.io/rafaelreverberi/twitchy-server:$VERSION@$DIGEST" >> "$GITHUB_STEP_SUMMARY"

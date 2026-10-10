@@ -1,0 +1,10 @@
+.git
+.env*
+secrets
+state
+.local
+.venv
+**/__pycache__
+tests/*
+!tests/container
+!tests/container/**

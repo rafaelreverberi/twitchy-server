@@ -1,0 +1,21 @@
+{
+  "retrieved_on": "2026-10-10",
+  "twitchy_repository": "https://github.com/rafaelreverberi/Twitchy",
+  "twitchy_commit": "f29ea979a08ccfa152309b01c73f7f29df1e3913",
+  "openapi_url": "https://raw.githubusercontent.com/rafaelreverberi/Twitchy/main/docs/SERVER_API.json",
+  "local_and_remote_openapi_identical": true,
+  "swift_models": "Exact Capabilities through APIErrorEnvelope definitions from StreamingSources.swift, plus JSONCoding from TwitchyCore/Networking.swift; import Foundation added",
+  "streamlink_version": "8.6.2",
+  "streamlink_tag_object": "f33007410e7a2b5717a095a23b4978f774a1493a",
+  "ryanbr_commit": "e4dfb26755cb440f9ec6a2430a9b131fa1de062a",
+  "sha256": {
+    "SERVER_API.json": "afd46e988fc51ee07f64a08966497c2fdf0f5fb6fa89a40eff1a96e5d611dfde",
+    "SERVER_API.md": "cc167c4a6b8538c83e2aa523efe0c18d9aa0243325c26bee95a68e5beb8d275f",
+    "TwitchAdSolutions-LICENSE.txt": "62c5fa75815deec0e43c22a4aec455195d7e6eedf8b0265ce4d2bcdb3161316d",
+    "SOURCES.md": "fc15e666792fdb9f1c9bc1638be1cc23d26a30f9fa28496d44fd11677a4730c7",
+    "SwiftModels.swift": "5b38f57a8480f7ce9260f795c4c01f42adc74f6f4c13788a46383a23ea61aced",
+    "TWITCHY-LICENSE.txt": "62d3653ecd2b8c809619df77a3f4115982827c7077ec880ab74966b8d794473b",
+    "TwitchAdSolutions-README.md": "aabdcfb1dc2180f817206719afdf4e0d17f29b61faa2fa92ad9bef7a2618a275",
+    "STREAMLINK-LICENSE.txt": "61f889e15470e2203207fd674ef28b460a5c7ee437ed8d65c791ea522792c052"
+  }
+}

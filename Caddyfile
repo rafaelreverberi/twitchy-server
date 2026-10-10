@@ -1,0 +1,4 @@
+{$SOURCE_DOMAIN} {
+    reverse_proxy server:8080
+    # No access log: signed media URLs are bearer credentials.
+}
