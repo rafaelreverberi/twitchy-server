@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 	"time"
 )
@@ -17,7 +18,7 @@ func main() {
 		slog.Error("configuration invalid", "reason", e.Error())
 		os.Exit(1)
 	}
-	app, e := server.New(cfg, server.StreamlinkProvider{Python: cfg.Python, Worker: cfg.Worker})
+	app, e := server.New(cfg, server.StreamlinkProvider{Python: cfg.Python, Worker: cfg.Worker, CacheDir: filepath.Join(cfg.MediaDir, "..", "resolver")})
 	if e != nil {
 		slog.Error("startup failed")
 		os.Exit(1)

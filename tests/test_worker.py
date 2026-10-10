@@ -11,7 +11,7 @@ import unittest
 from unittest.mock import patch
 import sys
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
-from worker.reader import ConservativeParser, FilteredStream, UnfilteredStream, allowed_url, secure_network, session
+from worker.reader import ConservativeParser, FilteredStream, UnfilteredStream, allowed_url, secure_network, session, streams
 
 HEADER = '#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-TARGETDURATION:2\n#EXT-X-MEDIA-SEQUENCE:0\n'
 AD = '#EXT-X-DATERANGE:ID="stitched-ad-fixture",CLASS="twitch-stitched-ad",START-DATE="2026-10-10T00:00:02Z",DURATION=2\n'
@@ -36,7 +36,7 @@ class Upstream:
                 if self.path == '/index.m3u8':
                     data = upstream.playlist.encode()
                 else:
-                    try: data = upstream.bodies[int(self.path[1:-3])]
+                    try: data = upstream.bodies[self.path[1:]] if self.path[1:] in upstream.bodies else upstream.bodies[int(self.path[1:-3])]
                     except (KeyError, ValueError):
                         self.send_response(404); self.end_headers(); return
                 self.send_response(200); self.send_header('Content-Length', str(len(data))); self.end_headers(); self.wfile.write(data)
@@ -110,7 +110,7 @@ class WorkerTests(unittest.TestCase):
             finally: upstream.close()
 
     def test_unsupported_partial_init_delta_fail_closed(self):
-        for tag in ['#EXT-X-PART:DURATION=1,URI="1.ts"', '#EXT-X-MAP:URI="init.mp4"', '#EXT-X-PRELOAD-HINT:TYPE=PART,URI="1.ts"', '#EXT-X-SKIP:SKIPPED-SEGMENTS=1']:
+        for tag in ['#EXT-X-PART:DURATION=1,URI="1.ts"', '#EXT-X-PRELOAD-HINT:TYPE=PART,URI="1.ts"', '#EXT-X-SKIP:SKIPPED-SEGMENTS=1']:
             with self.assertRaises(Exception): ConservativeParser().parse(HEADER + tag + '\n' + segment(0))
 
     def test_ssrf_allowlist_redirect_and_dns(self):
@@ -142,6 +142,45 @@ class WorkerTests(unittest.TestCase):
         marker = AD.replace(',DURATION=2', '')
         parsed = ConservativeParser().parse(HEADER + marker + segment(0) + segment(1) + segment(2))
         self.assertEqual([s.ad for s in parsed.segments], [False,True,True])
+
+    def test_fragmented_mp4_init_filter_remux_and_ad_pixels(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root=pathlib.Path(tmp)
+            cmd=['ffmpeg','-v','error']
+            for color in ['green','red','blue']: cmd+=['-f','lavfi','-i',f'color=c={color}:s=160x90:r=25:d=2']
+            cmd+=['-f','lavfi','-i','sine=frequency=440:sample_rate=48000','-filter_complex','[0:v][1:v][2:v]concat=n=3:v=1:a=0[v]','-map','[v]','-map','3:a','-t','6','-c:v','libx264','-pix_fmt','yuv420p','-threads','1','-g','50','-c:a','aac','-f','hls','-hls_time','2','-hls_segment_type','fmp4','-hls_segment_filename',str(root/'%d.m4s'),str(root/'index.m3u8')]
+            subprocess.run(cmd,check=True)
+            bodies={p.name:p.read_bytes() for p in root.iterdir()}
+            manifest=HEADER+'#EXT-X-MAP:URI="init.mp4"\n'+AD+segment(0)+segment(1)+segment(2,discontinuity=True)+'#EXT-X-ENDLIST\n'
+            manifest=manifest.replace('.ts','.m4s')
+            upstream=Upstream(manifest,bodies)
+            try: data=read(upstream)
+            finally: upstream.close()
+            self.assertTrue(data and data[0]==0x47)
+            pixels=subprocess.check_output(['ffmpeg','-v','error','-fflags','+genpts','-dts_delta_threshold','1','-f','mpegts','-i','pipe:0','-vf','scale=1:1','-f','rawvideo','-pix_fmt','rgb24','pipe:1'],input=data)
+            frames=list(zip(pixels[::3],pixels[1::3],pixels[2::3]))
+            self.assertTrue(any(g>r*2 and g>b for r,g,b in frames))
+            self.assertTrue(any(b>r*2 and b>g for r,g,b in frames))
+            self.assertFalse(any(r>max(g,b)*2 for r,g,b in frames))
+
+    def test_resolver_cache_reuses_only_fresh_same_channel_allowed_urls(self):
+        import json, os
+        from streamlink.plugins.twitch import TwitchHLSStream
+        s=session(test=True)
+        class Plugin:
+            def __init__(self, *args): pass
+            def streams(self): return self._get_hls_streams('https://usher.ttvnw.net/master.m3u8', [])
+        with tempfile.TemporaryDirectory() as tmp, patch.object(s,'resolve_url',return_value=('twitch',Plugin,'https://www.twitch.tv/example')), patch.object(TwitchHLSStream,'parse_variant_playlist',return_value={'720p60':TwitchHLSStream(s,'https://cdn.ttvnw.net/index.m3u8')}) as parser:
+            self.assertEqual(list(streams(s,'example',tmp)),['720p60'])
+            self.assertFalse(parser.call_args.kwargs['check_streams'])
+            self.assertEqual(list(streams(s,'example',tmp)),['720p60']);self.assertEqual(parser.call_count,1)
+            path=pathlib.Path(tmp)/'example.json'
+            self.assertEqual(path.stat().st_mode & 0o777,0o600)
+            data=json.loads(path.read_text());data['streams']['720p60']='http://127.0.0.1/secret';path.write_text(json.dumps(data))
+            streams(s,'example',tmp);self.assertEqual(parser.call_count,2)
+            streams(s,'example',tmp,fresh=True);self.assertEqual(parser.call_count,3)
+            data=json.loads(path.read_text());data['created']-=20;path.write_text(json.dumps(data))
+            streams(s,'example',tmp);self.assertEqual(parser.call_count,4)
 
     def test_remux_decodable_timeline_and_ad_pixels_absent(self):
         # Distinct RGB content, H264/AAC. Prove the client-visible remux contains

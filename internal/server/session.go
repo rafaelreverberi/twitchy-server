@@ -129,7 +129,7 @@ func (m *SessionManager) start(ctx context.Context, owner, channel, quality stri
 		defer cancel()
 		// Copy only; TS demuxer adjusts discontinuous input timestamps. No upstream
 		// URL is ever passed to FFmpeg, so its protocol access is pipe-only.
-		cmd := exec.CommandContext(life, m.cfg.FFmpeg, "-hide_banner", "-loglevel", "error", "-fflags", "+genpts+discardcorrupt", "-dts_delta_threshold", "1", "-probesize", "1048576", "-analyzeduration", "2000000", "-protocol_whitelist", "pipe", "-f", "mpegts", "-i", "pipe:0", "-map", "0:v:0", "-map", "0:a:0?", "-c", "copy", "-bsf:a", "setts=ts='if(eq(N,0),TS,max(TS,PREV_OUTDTS+DURATION))'", "-avoid_negative_ts", "make_zero", "-f", "hls", "-hls_time", "2", "-hls_list_size", "10", "-hls_delete_threshold", "3", "-hls_flags", "delete_segments+temp_file+discont_start", "-hls_segment_filename", filepath.Join(dir, "seg%09d.ts"), filepath.Join(dir, "index.m3u8"))
+		cmd := exec.CommandContext(life, m.cfg.FFmpeg, "-hide_banner", "-loglevel", "error", "-fflags", "+genpts+discardcorrupt", "-dts_delta_threshold", "1", "-probesize", "262144", "-analyzeduration", "500000", "-protocol_whitelist", "pipe", "-f", "mpegts", "-i", "pipe:0", "-map", "0:v:0", "-map", "0:a:0?", "-c", "copy", "-bsf:a", "setts=ts='if(eq(N,0),TS,max(TS,PREV_OUTDTS+DURATION))'", "-avoid_negative_ts", "make_zero", "-f", "hls", "-hls_time", "2", "-hls_list_size", "10", "-hls_delete_threshold", "3", "-hls_flags", "delete_segments+temp_file+discont_start", "-hls_segment_filename", filepath.Join(dir, "seg%09d.ts"), filepath.Join(dir, "index.m3u8"))
 		process(cmd)
 		input, e := cmd.StdinPipe()
 		if e != nil {

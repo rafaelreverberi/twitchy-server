@@ -27,7 +27,7 @@ type Provider interface {
 	Stream(context.Context, string, string, bool, io.Writer) error
 	Live() bool
 }
-type StreamlinkProvider struct{ Python, Worker string }
+type StreamlinkProvider struct{ Python, Worker, CacheDir string }
 
 func (p StreamlinkProvider) Live() bool { return true }
 func (p StreamlinkProvider) Ready(ctx context.Context) bool {
@@ -35,6 +35,9 @@ func (p StreamlinkProvider) Ready(ctx context.Context) bool {
 }
 func (p StreamlinkProvider) Qualities(ctx context.Context, channel string) ([]string, error) {
 	cmd := exec.CommandContext(ctx, p.Python, p.Worker, "probe", "--channel", channel)
+	if p.CacheDir != "" {
+		cmd.Env = append(os.Environ(), "RESOLVER_CACHE_DIR="+p.CacheDir)
+	}
 	var out cappedBuffer
 	cmd.Stdout = &out
 	_ = cmd.Run()
@@ -97,10 +100,19 @@ func (p StreamlinkProvider) Stream(ctx context.Context, channel, quality string,
 			}
 		}
 		cmd := exec.CommandContext(ctx, p.Python, p.Worker, "run", "--channel", channel, "--quality", quality, "--adblock", mode)
+		if attempt > 0 {
+			cmd.Args = append(cmd.Args, "--fresh")
+		}
+		if p.CacheDir != "" {
+			cmd.Env = append(os.Environ(), "RESOLVER_CACHE_DIR="+p.CacheDir)
+		}
 		process(cmd)
 		cmd.Stdout = w
 		cmd.Stderr = &stateEvents{}
-		_ = cmd.Run()
+		err := cmd.Run()
+		if exit, ok := err.(*exec.ExitError); ok && exit.ExitCode() == 7 {
+			return ErrProvider
+		}
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}

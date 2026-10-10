@@ -1,5 +1,10 @@
 """Private media-byte worker. Never returns upstream URLs or credentials to Go/clients."""
 import argparse
+import pathlib
+import tempfile
+import time
+import subprocess
+import hashlib
 import ipaddress
 import json
 import logging
@@ -12,7 +17,7 @@ from urllib.parse import urlsplit
 from streamlink import Streamlink
 from streamlink.exceptions import StreamError
 from streamlink.plugins.twitch import TwitchHLSStream, TwitchHLSStreamReader, TwitchHLSStreamWorker, TwitchHLSStreamWriter, TwitchM3U8Parser
-from streamlink.stream.hls import HLSStream, HLSStreamReader, HLSStreamWorker
+from streamlink.stream.hls import HLSStream, HLSStreamReader, HLSStreamWorker, HLSStreamWriter
 import urllib3.util.connection
 
 logging.disable(logging.CRITICAL)
@@ -79,7 +84,12 @@ class ConservativeParser(TwitchM3U8Parser):
             self.cue_ad = True
         elif line == "#EXT-X-CUE-IN":
             self.cue_ad = False
-        return super().parse_line(line)
+        previous_map=self._map
+        result=super().parse_line(line)
+        # EXT-X-MAP remains applicable until replaced (RFC 8216 §4.3.2.5).
+        # Keep it across a discontinuity; reject an actual init-byte change.
+        if line=='#EXT-X-DISCONTINUITY': self._map=previous_map
+        return result
 
     def _is_segment_ad(self, date, title=None):
         # The legacy Twitch EXTINF marker is Amazon, not arbitrary filename text.
@@ -93,12 +103,53 @@ class ConservativeParser(TwitchM3U8Parser):
         # unfiltered init/partial/rendition/key URL or incoherent fMP4 timeline.
         text = data if isinstance(data, str) else data.text
         for line in text.splitlines():
-            if line.startswith(("#EXT-X-MAP:", "#EXT-X-PART:", "#EXT-X-PRELOAD-HINT:", "#EXT-X-SKIP:")):
+            if line.startswith(("#EXT-X-PART:", "#EXT-X-PRELOAD-HINT:", "#EXT-X-SKIP:")):
                 raise StreamError("unsupported upstream HLS feature")
         return super().parse(data, *args, **kwargs)
 
 
-class DiagnosticWriter(TwitchHLSStreamWriter):
+class FragmentRemuxMixin:
+    init_bytes = None
+    init_uri = None
+    init_hash = None
+    def bounded_body(self, response, limit):
+        body=bytearray()
+        for chunk in response.iter_content(65536):
+            if len(body)+len(chunk)>limit: raise StreamError('upstream fragment size limit')
+            body.extend(chunk)
+        return bytes(body)
+
+    def accept_init(self, segment, response):
+        data=self.bounded_body(response,1024*1024)
+        digest=hashlib.sha256(data).digest()
+        if self.init_hash is not None and self.init_hash!=digest:
+            raise StreamError('unsupported initialization change')
+        self.init_bytes=data;self.init_uri=segment.map.uri;self.init_hash=digest
+
+    def _write(self, segment, response, is_map):
+        if not segment.map: return super()._write(segment,response,is_map)
+        try:
+            if segment.key and segment.key.method!='NONE': raise StreamError('unsupported encrypted fragment')
+            if segment.map.key and segment.map.key.method!='NONE': raise StreamError('unsupported encrypted initialization')
+            if is_map:
+                if self.init_bytes is None or self.init_uri!=segment.map.uri: self.accept_init(segment,response)
+                return
+            if self.init_bytes is None or self.init_uri!=segment.map.uri:
+                self.accept_init(segment,self.fetch_map(segment))
+            fragment=self.bounded_body(response,32*1024*1024)
+            # Only normal segments reach this method: the outer Twitch writer
+            # filters both advertising init and fragment responses first.
+            # Convert one bounded fMP4 fragment to TS without transcoding. The
+            # long-lived Go remuxer then repairs TS discontinuities as usual.
+            result=subprocess.run([os.environ.get('FFMPEG','ffmpeg'),'-hide_banner','-loglevel','error','-protocol_whitelist','pipe','-copyts','-i','pipe:0','-map','0:v:0','-map','0:a:0?','-c','copy','-mpegts_copyts','1','-muxdelay','0','-muxpreload','0','-f','mpegts','pipe:1'],input=self.init_bytes+fragment,stdout=subprocess.PIPE,stderr=subprocess.DEVNULL,timeout=12)
+            if result.returncode or not result.stdout or len(result.stdout)>40*1024*1024: raise StreamError('fragment remux failed')
+            self._write_into_buffer(iter([result.stdout]))
+        except Exception:
+            self.reader.fragment_failed=True
+            self.close()
+
+
+class DiagnosticWriter(FragmentRemuxMixin,TwitchHLSStreamWriter):
     was_ad = False
     def should_filter_segment(self, segment):
         ad = super().should_filter_segment(segment)
@@ -118,9 +169,12 @@ class FilteredStream(TwitchHLSStream):
     __reader__ = FilteredReader
 
 
+class UnfilteredWriter(FragmentRemuxMixin, HLSStreamWriter): pass
+class UnfilteredReader(HLSStreamReader):
+    __writer__ = UnfilteredWriter
 class UnfilteredStream(HLSStream):
-    # Same supported-format checks, without the Twitch filtering writer.
     __parser__ = ConservativeParser
+    __reader__ = UnfilteredReader
 
 
 def session(test=False):
@@ -138,17 +192,63 @@ def session(test=False):
     return s
 
 
-def streams(s, login):
+def streams(s, login, cache_dir=None, fresh=False):
     if not LOGIN.fullmatch(login):
         raise ValueError("invalid login")
-    found = s.streams("https://www.twitch.tv/" + login.lower())
-    return {q: stream for q, stream in found.items()
+    cache = pathlib.Path(cache_dir) if cache_dir else None
+    path = cache/(login.lower()+'.json') if cache else None
+    if path and not fresh:
+        try:
+            data=json.loads(path.read_text())
+            if 0 <= time.time()-data['created'] <= 15 and data['channel']==login.lower():
+                urls=data['streams']
+                if 0 < len(urls) <= 40 and all(re.fullmatch(r"\d+p(?:\d+)?",q) and allowed_url(url) for q,url in urls.items()):
+                    return {q:TwitchHLSStream(s,url) for q,url in urls.items()}
+        except (OSError,ValueError,KeyError,TypeError): pass
+    # Enumerate the master once. Do not serially fetch every rendition: the
+    # selected playlist is validated by its real reader before any API success.
+    _, plugin_class, url = s.resolve_url('https://www.twitch.tv/'+login.lower())
+    plugin=plugin_class(s,url)
+    def master(url, restricted_bitrates, **params):
+        try:
+            return TwitchHLSStream.parse_variant_playlist(s,url,check_streams=False,low_latency=False,**params)
+        except OSError as error:
+            from requests.exceptions import HTTPError
+            cause=error.__context__
+            if isinstance(cause,HTTPError) and cause.response is not None and cause.response.status_code>=400:
+                return {}
+            raise
+    plugin._get_hls_streams=master
+    found = plugin.streams()
+    result = {q: stream for q, stream in found.items()
             if re.fullmatch(r"\d+p(?:\d+)?", q) and isinstance(stream, HLSStream) and type(stream).__name__ == "TwitchHLSStream"}
+    if path and result:
+        cache.mkdir(mode=0o700,parents=True,exist_ok=True)
+        # Bounded public-channel acquisition cache, not a media/session cache.
+        for entry in cache.iterdir():
+            try:
+                if time.time()-entry.stat().st_mtime>15: entry.unlink()
+            except OSError: pass
+        entries=[]
+        for entry in cache.glob('*.json'):
+            try: entries.append((entry.stat().st_mtime,entry))
+            except OSError: pass
+        for _,entry in sorted(entries)[:-31]:
+            try: entry.unlink()
+            except OSError: pass
+        fd,tmp=tempfile.mkstemp(dir=cache)
+        try:
+            with os.fdopen(fd,'w') as f: json.dump({'created':time.time(),'channel':login.lower(),'streams':{q:st.url for q,st in result.items()}},f)
+            os.replace(tmp,path)
+        finally:
+            try: os.unlink(tmp)
+            except FileNotFoundError: pass
+    return result
 
 
 def run(args):
     s = session()
-    found = streams(s, args.channel)
+    found = streams(s, args.channel, os.environ.get("RESOLVER_CACHE_DIR"), args.fresh)
     qualities = sorted(found, key=lambda q: tuple(int(n) for n in re.findall(r"\d+", q)))
     if not qualities:
         status = getattr(s, 'upstream_status', 0)
@@ -169,6 +269,7 @@ def run(args):
         while True:
             data = reader.read(64 * 1024)
             if not data:
+                if getattr(reader,"fragment_failed",False): return 7
                 break
             sys.stdout.buffer.write(data)
             sys.stdout.buffer.flush()
@@ -179,6 +280,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("mode", choices=["check", "probe", "run"])
     parser.add_argument("--channel")
+    parser.add_argument("--fresh", action="store_true")
     parser.add_argument("--quality", default="auto")
     parser.add_argument("--adblock", choices=["on", "off"], default="on")
     args = parser.parse_args()

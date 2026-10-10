@@ -26,7 +26,7 @@ var identifier = regexp.MustCompile(`^[a-zA-Z0-9_-]{1,199}$`)
 var loginPattern = regexp.MustCompile(`^[a-zA-Z0-9_]{1,25}$`)
 var segmentPattern = regexp.MustCompile(`^seg[0-9]{9,15}\.ts$`)
 
-const Version = "0.1.0"
+const Version = "0.1.1"
 
 type Server struct {
 	cfg      Config
