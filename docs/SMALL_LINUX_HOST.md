@@ -1,6 +1,6 @@
 # Small Linux hosts and Best quality
 
-Intel NUC-style x86-64 Linux hosts are supported by the linux/amd64 build; linux/arm64 is also supported. Published v0.1.1 was pulled and run on native amd64 CI. No particular NUC model has been load-tested. 32-bit systems are not targeted.
+Intel NUC-style x86-64 Linux hosts are supported by the linux/amd64 build; linux/arm64 is also supported. Published v0.2.1 was pulled and run on native amd64 CI, and the registry manifest contains amd64 and arm64. No particular NUC model has been load-tested. 32-bit systems are not targeted.
 
 The server copies encoded H.264/AAC packets (`-c copy`) and remuxes them; it does not decode or transcode video. A GPU or Quick Sync is not required. Stable fMP4 needs a short FFmpeg process per complete clean fragment as well as the continuous HLS remuxer, so work is not zero and scales with concurrent sessions. Each session has independent upstream acquisition and output, even for the same channel. More sessions consume more CPU, memory, disk traffic and bandwidth.
 
@@ -8,4 +8,6 @@ For a small personal host, two CPU cores and 2–4 GiB of total system RAM are a
 
 Twitchy calls its existing `auto` quality selector **Best**. At session creation the server selects the highest available supported rendition. It does not create missing resolutions or adapt to bandwidth. The optional `selected_quality` response lets the updated app display `Best (1080p60)` instead of guessing from the available list. This addition is backward-compatible; older sources display only Best. The choice is reevaluated when a new session starts, not continuously during an existing session.
 
-This follow-up is currently in the source checkout and the locally rebuilt server/app; the v0.1.1 registry image predates `selected_quality`. Build from this updated checkout to include the resolved-quality label. Existing independently generated source credentials and source authentication remain unchanged. When moving to a NUC, configure the app with that host's trusted HTTPS source URL rather than localhost; localhost refers to the device running the app.
+The v0.2.1 registry image includes `selected_quality`, recorded playback, and client downloads. The companion app build is local; use the updated client to show the resolved-quality label and download controls. Existing independently generated source credentials and source authentication remain unchanged. When moving to a NUC, configure the app with that host's trusted HTTPS source URL rather than localhost; localhost refers to the device running the app.
+
+Recorded downloads copy/remux directly to the client and do not retain a complete archive on server disk. VOD segment buffers and clip RAM remux input are bounded; temporary clip playback HLS lasts only for its session. Concurrent recorded acquisitions/transfers are limited to two and downloads also reserve the configured session limits. Large client files require space on the client.

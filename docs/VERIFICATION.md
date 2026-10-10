@@ -56,7 +56,7 @@ After replacing the local Xcode build, the old attached debugserver had to be st
 
 A separate timed native AVPlayer run at 720p60 measured 2.41 seconds to session response and 2.98 seconds from POST initiation until AVPlayer reported playing, followed by five seconds of advancing playback and successful DELETE. This is a single player-state measurement, not a guaranteed visual-first-frame latency.
 
-## v0.2.0 recorded playback and client-download verification
+## v0.2.1 recorded playback and client-download verification
 
 Local Go race tests and vet passed, including full signed VOD timelines/revocation, principal ownership, MP4 streaming with AAC audio, shutdown cancellation and no download media retained on server disk. Eighteen worker tests passed (the anonymous RAM-file case is exercised on Linux), including VOD manifest ad exclusion/discontinuities, unsupported encryption/ranges, clip short reads, and HLS/HTTP inheritance regression. Nineteen recorded legacy API responses still validate against the immutable imported schema. The explicit client-side extension is documented separately in RECORDED.md.
 
@@ -65,3 +65,11 @@ Real public BastiGHG archive 2896320824 produced a full 1,010-segment 360p30 tim
 Real public clip EndearingHonestTriangleStrawBeary-WVupXff47gjWlcJQ played Best through native AVPlayer. The actual Swift DownloadManager transferred 360p30 MP4 using URLSessionDownloadTask, restored completion from its local index, played the local MP4 through AVPlayer without any source request, and deleted the test file. A real multi-hour VOD download delivered the first 1 MiB as MP4 and was deliberately aborted and cancelled; the entire multi-hour file was not downloaded in this check. A live BastiGHG regression created/decoded ten seconds and verified deletion/revocation after recorded implementation. Controlled fixtures prove removal of recognized ad bytes/pixels; no naturally occurring archived ad segment was claimed in the public samples.
 
 The macOS build passed. No physical iPhone/iPad/Apple TV, NUC hardware, interrupted multi-hour transfer recovery or remote HTTPS deployment was tested. App edits remain local; unrelated Xcode project edits and handoff files are preserved.
+
+The native Downloads UI completed a 5.9 MB older BastiGHG clip and Play offline visibly played the local file. The latest client package also passed a real expired-job retry and offline replay. Long transfers refresh the HTTP write deadline; a delayed MP4 response completed despite a test server's 50 ms global write timeout. Client and server transfer budgets are bounded at 12 hours. No complete multi-hour public archive was downloaded.
+
+Release [v0.2.1](https://github.com/rafaelreverberi/twitchy-server/releases/tag/v0.2.1), source commit `e7de87d57bd9d236875cd2d3009ab6a91bb712aa`, passed [CI 38053717578](https://github.com/rafaelreverberi/twitchy-server/actions/runs/38053717578). The registry manifest was verified for Linux amd64/arm64, native amd64 pulled-image health passed, and the package remained private. Published FFmpeg source and verification-report assets were downloaded again and their published SHA256SUMS matched.
+
+```text
+ghcr.io/rafaelreverberi/twitchy-server:0.2.1@sha256:f3e29d74a1a87ee6d9fd2a4bc6c15f21f6461361815a84338e4269970da47893
+```
