@@ -200,7 +200,9 @@ func (s *Server) downloadRoute(w http.ResponseWriter, r *http.Request, owner, pa
 		s.downloadFailed(id)
 		return
 	}
-	cmd := exec.CommandContext(ctx, s.cfg.FFmpeg, "-v", "error", "-fflags", "+genpts+discardcorrupt", "-dts_delta_threshold", "1", "-protocol_whitelist", "pipe", "-f", "mpegts", "-i", "pipe:0", "-map", "0:v:0", "-map", "0:a:0?", "-c", "copy", "-bsf:a", "aac_adtstoasc,setts=ts='if(eq(N,0),TS,max(TS,PREV_OUTDTS+DURATION))'", "-avoid_negative_ts", "make_zero", "-movflags", "frag_keyframe+empty_moov+default_base_moof", "-frag_duration", "2000000", "-f", "mp4", "pipe:1")
+	// Wait for the first fragment so aac_adtstoasc can supply AudioSpecificConfig
+	// before writing moov. An empty_moov header omits it for ADTS AAC from MPEG-TS.
+	cmd := exec.CommandContext(ctx, s.cfg.FFmpeg, "-v", "error", "-fflags", "+genpts+discardcorrupt", "-dts_delta_threshold", "1", "-protocol_whitelist", "pipe", "-f", "mpegts", "-i", "pipe:0", "-map", "0:v:0", "-map", "0:a:0?", "-c", "copy", "-bsf:a", "aac_adtstoasc,setts=ts='if(eq(N,0),TS,max(TS,PREV_OUTDTS+DURATION))'", "-avoid_negative_ts", "make_zero", "-movflags", "frag_keyframe+delay_moov+default_base_moof", "-frag_duration", "2000000", "-f", "mp4", "pipe:1")
 	process(cmd)
 	input, err := cmd.StdinPipe()
 	if err != nil {

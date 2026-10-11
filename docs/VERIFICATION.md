@@ -73,3 +73,13 @@ Release [v0.2.1](https://github.com/rafaelreverberi/twitchy-server/releases/tag/
 ```text
 ghcr.io/rafaelreverberi/twitchy-server:0.2.1@sha256:f3e29d74a1a87ee6d9fd2a4bc6c15f21f6461361815a84338e4269970da47893
 ```
+
+## v0.2.2 download AAC header regression (2026-10-11)
+
+The actual Docker runtime's FFmpeg 5.1.9 reproduced the missing AAC configuration with the complete existing download command: `empty_moov` yielded AAC profile -1 and no extradata. macOS AVFoundation recognized video only and initially reported 2.08 seconds for the six-second fixture. Replacing only that flag with `delay_moov` yielded valid AAC-LC/48 kHz/stereo AudioSpecificConfig `0x1190`, both tracks and 6.08 seconds in AVFoundation. Normal playback paths are unchanged; downloads retain copy-remux, optional audio and direct streaming without a server archive.
+
+The new regression exercises actual HTTP download handlers for both VOD and clip targets, with audio and video-only fixtures. It verifies exact AAC configuration, monotone DTS, decoded-frame-derived audio durations, all 150 video frames, decoded tone energy in all six seconds, job completion/byte count and no retained server media. Container video spans 0.080–6.080 seconds and audio 0.058–6.095 seconds. HTTP checks cover early 503, late aborted transfer, DELETE after response headers, client disconnect, shutdown and the existing write-deadline override.
+
+Local Go race/vet, legacy schemas (19 responses) and Swift models (18 responses) passed. All 18 Python worker tests passed in the production container; macOS passed 17 and skipped only the Linux anonymous-file test. Complete container smoke passed on native arm64 and emulated amd64, including signed HLS, ten-second decode, revocation, download regressions and cleanup. Production-image health passed under the existing non-root restrictions. Pinned dependencies, runtime user, authentication, signing and URL path handling are unchanged.
+
+AVFoundation decoded the container-produced clip and VOD fixtures through 6.051 seconds (290464 stereo PCM frames), with measurable tone energy in every second; video-only fixtures retained full duration. These are synthetic fixtures and macOS framework checks, not real Twitch downloads, physical iPhone playback, physical Intel hardware or observed live ad-break checks. The existing updated Twitchy client needs no additional AAC workaround. Previously downloaded files are unchanged and affected media must be downloaded again after updating the server.

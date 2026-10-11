@@ -33,11 +33,13 @@ FROM build AS fixture-build
 COPY tests/container ./tests/container
 ARG TARGETOS TARGETARCH
 RUN CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH go build -trimpath -o /out/twitchy-fixture ./tests/container
+RUN CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH go test -c -o /out/server-tests ./internal/server
 
 FROM runtime AS smoke
 USER root
 RUN ffmpeg -v error -f lavfi -i testsrc2=size=160x90:rate=25 -f lavfi -i sine=frequency=440 -t 4 -c:v libx264 -threads 1 -g 25 -c:a aac -f mpegts /app/fixture.ts
 COPY --from=fixture-build /out/twitchy-fixture /app/twitchy-fixture
+COPY --from=fixture-build /out/server-tests /app/server-tests
 USER 10001:10001
 ENTRYPOINT ["/app/twitchy-fixture"]
 

@@ -18,6 +18,9 @@ if [ "$mode" = health ]; then
     TOKEN_FILE="$work/tokens.json" python3 scripts/smoke.py --base-url "http://127.0.0.1:$port" --health-only
 else
     TOKEN_FILE="$work/tokens.json" python3 scripts/smoke.py --base-url "http://127.0.0.1:$port" --channel fixture --decode
+    # Exercise real download handlers with this image's FFmpeg, including AAC
+    # configuration, full decoding, silent sources, cancellation and failures.
+    docker exec "$name" /app/server-tests -test.run 'TestDownload|TestClientDownload|TestRecordedShutdown|TestArchiveTransfer' -test.v
 fi
 # Every worker and media directory must be gone after DELETE.
 count=$(docker exec "$name" python -c 'import os; print(len(os.listdir("/state/media")))')
